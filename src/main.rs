@@ -49,8 +49,9 @@ fn main() -> Result<()> {
     let _guard = handle.enter();
     let app = init_editor().unwrap().unwrap();
     let editor = app.editor;
+    let keymaps = app.keymaps;
     drop(_guard);
-    gui_main(editor);
+    gui_main(editor, keymaps);
     Ok(())
 }
 
@@ -72,15 +73,27 @@ fn window_options(_cx: &mut AppContext) -> gpui::WindowOptions {
     }
 }
 
-fn gui_main(editor: Editor) {
+pub struct Update;
+
+impl gpui::EventEmitter<Update> for Editor {}
+
+fn gui_main(editor: Editor, keymaps: helix_term::keymap::Keymaps) {
     App::new().run(|cx: &mut AppContext| {
         let options = window_options(cx);
         cx.open_window(options, |cx| {
-            let window = cx.window_handle();
+            // let window = cx.window_handle();
             let editor = cx.new_model(|_mc| editor);
+            let keymaps = cx.new_model(|_mc| keymaps);
             cx.activate(true);
 
-            cx.new_view(|_cx| workspace::Workspace { editor })
+            cx.new_view(|cx| {
+                cx.subscribe(&editor, |_, _, _, cx| {
+                    println!("editor updated");
+                    cx.notify()
+                })
+                .detach();
+                workspace::Workspace { editor, keymaps }
+            })
         });
     })
 }
@@ -201,8 +214,8 @@ FLAGS:
     });
 
     // TODO: use the thread local executor to spawn the application task separately from the work pool
-    let mut app =
-        Application::new(args, config, lang_loader).context("unable to create new application")?;
+    let app = application::init_editor(args, config, lang_loader)
+        .context("unable to create new application")?;
 
     Ok(Some(app))
 

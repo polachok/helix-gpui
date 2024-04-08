@@ -6,12 +6,12 @@ use helix_core::{
     ropey::RopeSlice,
     syntax::{Highlight, HighlightEvent},
 };
+use helix_term::keymap::Keymaps;
 use helix_view::{graphics::CursorKind, DocumentId, Editor};
 
 pub struct Workspace {
     pub editor: Model<Editor>,
-    //pub terminal: Model<Terminal>,
-    //pub tabs: Vec<()>,
+    pub keymaps: Model<Keymaps>,
 }
 
 // impl Workspace {
@@ -66,6 +66,7 @@ impl Cursor {
 
 struct DocumentView {
     editor: Model<Editor>,
+    keymaps: Model<Keymaps>,
     doc: DocumentId,
     style: TextStyle,
     interactivity: Interactivity,
@@ -73,9 +74,16 @@ struct DocumentView {
 }
 
 impl DocumentView {
-    fn new(editor: Model<Editor>, doc: DocumentId, style: TextStyle, focus: &FocusHandle) -> Self {
+    fn new(
+        editor: Model<Editor>,
+        keymaps: Model<Keymaps>,
+        doc: DocumentId,
+        style: TextStyle,
+        focus: &FocusHandle,
+    ) -> Self {
         Self {
             editor,
+            keymaps,
             doc,
             style,
             interactivity: Interactivity::default(),
@@ -189,6 +197,42 @@ fn color_to_hsla(color: helix_view::graphics::Color) -> Hsla {
     }
 }
 
+fn translate_key(ks: &Keystroke) -> helix_view::input::KeyEvent {
+    use helix_view::keyboard::{KeyCode, KeyModifiers};
+
+    let mut modifiers = KeyModifiers::NONE;
+    if ks.modifiers.alt {
+        modifiers |= KeyModifiers::ALT;
+    }
+    if ks.modifiers.control {
+        modifiers |= KeyModifiers::CONTROL;
+    }
+    if ks.modifiers.shift {
+        modifiers |= KeyModifiers::SHIFT;
+    }
+    let code = match ks.key.as_str() {
+        "backspace" => KeyCode::Backspace,
+        "enter" => KeyCode::Enter,
+        "left" => KeyCode::Left,
+        "right" => KeyCode::Right,
+        "up" => KeyCode::Up,
+        "down" => KeyCode::Down,
+        "tab" => KeyCode::Tab,
+        "escape" => KeyCode::Esc,
+        /* TODO */
+        _ => {
+            let chars: Vec<char> = ks.key.clone().chars().collect();
+            if chars.len() == 1 {
+                KeyCode::Char(chars[0])
+            } else {
+                todo!()
+            }
+        }
+    };
+
+    helix_view::input::KeyEvent { code, modifiers }
+}
+
 #[derive(Debug)]
 struct DocumentLayout {
     rows: usize,
@@ -277,13 +321,58 @@ impl Element for DocumentView {
         println!("{:?} {:?} {:?}", self.doc, after_layout, bounds);
         let highlights = self.highlights(cx);
 
+        self.interactivity.capture_key_down(|ev, cx| {
+            println!("inter {:?}", ev);
+        });
+
+        let mode = {
+            let editor = self.editor.read(cx);
+            editor.mode()
+        };
+        let focus = self.focus.clone();
+        self.interactivity
+            .on_mouse_down(MouseButton::Left, move |ev, cx| {
+                println!("MOUSE DOWN");
+                cx.focus(&focus);
+            });
+
         self.interactivity
             .paint(bounds, after_layout.hitbox.as_ref(), cx, |_, cx| {
-                // cx.focus(&self.focus);
+                cx.focus(&self.focus);
+                let keymaps = self.keymaps.clone();
+                let editor = self.editor.clone();
                 // // println!("{:?}", highlights);
-                // cx.on_key_event::<KeyDownEvent>(|ev, phase, cx| {
-                //     println!("{:?}", ev);
-                // });
+                cx.on_key_event::<KeyDownEvent>(move |ev, phase, cx| {
+                    if phase != DispatchPhase::Bubble {
+                        return;
+                    }
+                    println!("KEY EVENT {:?} @ {:?}", ev, phase);
+                    let key = translate_key(&ev.keystroke);
+
+                    println!("KEY EVENT {:?}", key);
+                    let res = keymaps.update(cx, |keymaps, _cx| keymaps.get(mode, key));
+                    println!("res {:?}", res);
+                    let res = editor.update(cx, |editor, cx| {
+                        let mut ctx = helix_term::commands::Context {
+                            editor,
+                            register: None,
+                            count: None,
+                            callback: Vec::new(),
+                            on_next_key_callback: None,
+                            jobs: &mut helix_term::job::Jobs::new(),
+                        };
+                        let res = handle_key_result(mode, &mut ctx, res);
+                        cx.notify();
+                        cx.emit(crate::Update);
+                        res
+                    });
+                    println!("res {:?}", res);
+                    if let Some(view_id) = cx.parent_view_id() {
+                        println!("redraw?");
+                        cx.notify(view_id);
+                    }
+                });
+                //}
 
                 let editor = self.editor.read(cx);
 
@@ -318,31 +407,34 @@ impl Element for DocumentView {
                 for (line_nr, line) in text.lines().take(lines).enumerate() {
                     let is_cursor_line = cursor_pos.map(|p| p.row == line_nr).unwrap_or(false);
                     if is_cursor_line {
-                        let text = line.char(cursor_pos.map(|p| p.col).unwrap());
-                        let cursor_bg = cursor_style
-                            .bg
-                            .map(|fg| color_to_hsla(fg))
-                            .unwrap_or(fg_color);
+                        if let Some(text) = line.get_char(cursor_pos.map(|p| p.col).unwrap()) {
+                            let cursor_bg = cursor_style
+                                .bg
+                                .map(|fg| color_to_hsla(fg))
+                                .unwrap_or(fg_color);
 
-                        let cursor_fg = cursor_style
-                            .fg
-                            .map(|fg| color_to_hsla(fg))
-                            .unwrap_or(fg_color);
+                            let cursor_fg = cursor_style
+                                .fg
+                                .map(|fg| color_to_hsla(fg))
+                                .unwrap_or(fg_color);
 
-                        let run = TextRun {
-                            len: 1,
-                            font: self.style.font(),
-                            color: cursor_fg,
-                            background_color: Some(cursor_bg),
-                            underline: None,
-                            strikethrough: None,
-                        };
+                            let run = TextRun {
+                                len: 1,
+                                font: self.style.font(),
+                                color: cursor_fg,
+                                background_color: Some(cursor_bg),
+                                underline: None,
+                                strikethrough: None,
+                            };
 
-                        let shaped = cx
-                            .text_system()
-                            .shape_line(text.to_string().into(), after_layout.font_size, &[run]) // todo: runs
-                            .unwrap();
-                        cursor_text = Some(shaped);
+                            let text = if text == '\n' { ' ' } else { text };
+
+                            let shaped = cx
+                                .text_system()
+                                .shape_line(text.to_string().into(), after_layout.font_size, &[run]) // todo: runs
+                                .unwrap();
+                            cursor_text = Some(shaped);
+                        }
                     }
                     //println!("string `{}`", line);
                     let len = line.len_chars();
@@ -465,7 +557,13 @@ impl Render for Workspace {
                 ..Default::default()
             };
 
-            let doc_view = DocumentView::new(self.editor.clone(), id, style, &focus_handle);
+            let doc_view = DocumentView::new(
+                self.editor.clone(),
+                self.keymaps.clone(),
+                id,
+                style,
+                &focus_handle,
+            );
             docs.push(doc_view);
         }
 
@@ -479,7 +577,66 @@ impl Render for Workspace {
             .flex_col()
             .w_full()
             .h_full()
+            .focusable()
             .child(top_bar)
             .children(docs)
     }
+}
+
+/// Handle events by looking them up in `self.keymaps`. Returns None
+/// if event was handled (a command was executed or a subkeymap was
+/// activated). Only KeymapResult::{NotFound, Cancelled} is returned
+/// otherwise.
+fn handle_key_result(
+    mode: helix_view::document::Mode,
+    cxt: &mut helix_term::commands::Context,
+    key_result: helix_term::keymap::KeymapResult,
+) -> Option<helix_term::keymap::KeymapResult> {
+    use helix_term::events::{OnModeSwitch, PostCommand};
+    use helix_term::keymap::KeymapResult;
+    use helix_view::document::Mode;
+
+    let mut last_mode = mode;
+    //self.pseudo_pending.extend(self.keymaps.pending());
+    //let key_result = keymaps.get(mode, event);
+    //cxt.editor.autoinfo = keymaps.sticky().map(|node| node.infobox());
+
+    let mut execute_command = |command: &helix_term::commands::MappableCommand| {
+        command.execute(cxt);
+        helix_event::dispatch(PostCommand { command, cx: cxt });
+
+        let current_mode = cxt.editor.mode();
+        if current_mode != last_mode {
+            helix_event::dispatch(OnModeSwitch {
+                old_mode: last_mode,
+                new_mode: current_mode,
+                cx: cxt,
+            });
+
+            // HAXX: if we just entered insert mode from normal, clear key buf
+            // and record the command that got us into this mode.
+            if current_mode == Mode::Insert {
+                // how we entered insert mode is important, and we should track that so
+                // we can repeat the side effect.
+                //self.last_insert.0 = command.clone();
+                //self.last_insert.1.clear();
+            }
+        }
+
+        last_mode = current_mode;
+    };
+
+    match &key_result {
+        KeymapResult::Matched(command) => {
+            execute_command(command);
+        }
+        KeymapResult::Pending(node) => cxt.editor.autoinfo = Some(node.infobox()),
+        KeymapResult::MatchedSequence(commands) => {
+            for command in commands {
+                execute_command(command);
+            }
+        }
+        KeymapResult::NotFound | KeymapResult::Cancelled(_) => return Some(key_result),
+    }
+    None
 }
