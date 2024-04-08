@@ -3,7 +3,6 @@ use std::{collections::btree_map::Entry, io::stdin, path::Path, sync::Arc};
 
 use helix_core::{diagnostic::Severity, pos_at_coords, syntax, Position, Selection};
 
-use crate::compositor::{Compositor, Context};
 use helix_stdx::path::get_relative_path;
 use helix_term::{
     args::Args,
@@ -103,7 +102,6 @@ pub fn init_editor(
     //editor.new_file(Action::VerticalSplit);
     editor.set_theme(theme);
 
-    let compositor = Compositor::new(area);
     let keys = Box::new(Map::new(Arc::clone(&config), |config: &Config| {
         &config.keys
     }));

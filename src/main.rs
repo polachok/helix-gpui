@@ -11,8 +11,6 @@ use gpui::{
 };
 
 mod application;
-mod compositor;
-mod ui;
 mod workspace;
 
 fn setup_logging(verbosity: u64) -> Result<()> {
