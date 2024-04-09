@@ -7,7 +7,7 @@ use helix_core::{
     syntax::{Highlight, HighlightEvent},
 };
 use helix_term::keymap::Keymaps;
-use helix_view::{graphics::CursorKind, DocumentId, Editor};
+use helix_view::{graphics::CursorKind, DocumentId, Editor, ViewId};
 
 pub struct Workspace {
     pub editor: Model<Editor>,
@@ -67,7 +67,8 @@ impl Cursor {
 struct DocumentView {
     editor: Model<Editor>,
     keymaps: Model<Keymaps>,
-    doc: DocumentId,
+    doc_id: DocumentId,
+    view_id: ViewId,
     style: TextStyle,
     interactivity: Interactivity,
     focus: FocusHandle,
@@ -77,14 +78,16 @@ impl DocumentView {
     fn new(
         editor: Model<Editor>,
         keymaps: Model<Keymaps>,
-        doc: DocumentId,
+        doc_id: DocumentId,
+        view_id: ViewId,
         style: TextStyle,
         focus: &FocusHandle,
     ) -> Self {
         Self {
             editor,
             keymaps,
-            doc,
+            doc_id,
+            view_id,
             style,
             interactivity: Interactivity::default(),
             focus: focus.clone(),
@@ -126,9 +129,9 @@ impl Highlights {
 }
 
 impl DocumentView {
-    fn highlights(&self, cx: &mut ElementContext) -> Highlights {
+    fn syntax_highlights(&self, cx: &mut ElementContext) -> Highlights {
         let editor = self.editor.read(cx);
-        let doc = editor.document(self.doc).unwrap();
+        let doc = editor.document(self.doc_id).unwrap();
         let text = doc.text().slice(..);
         match doc.syntax() {
             Some(syn) => {
@@ -299,6 +302,16 @@ impl Element for DocumentView {
                         .width;
                     let columns = (bounds.size.width / em_width).floor() as usize;
                     let rows = (bounds.size.height / line_height).floor() as usize;
+
+                    editor.update(cx, |editor, _cx| {
+                        let rect = helix_view::graphics::Rect {
+                            x: 0,
+                            y: 0,
+                            width: columns as u16,
+                            height: rows as u16,
+                        };
+                        editor.resize(rect)
+                    });
                     DocumentLayout {
                         hitbox,
                         rows,
@@ -318,12 +331,8 @@ impl Element for DocumentView {
         after_layout: &mut Self::AfterLayout,
         cx: &mut ElementContext,
     ) {
-        println!("{:?} {:?} {:?}", self.doc, after_layout, bounds);
-        let highlights = self.highlights(cx);
-
-        self.interactivity.capture_key_down(|ev, cx| {
-            println!("inter {:?}", ev);
-        });
+        println!("{:?} {:?} {:?}", self.doc_id, after_layout, bounds);
+        let highlights = self.syntax_highlights(cx);
 
         let mode = {
             let editor = self.editor.read(cx);
@@ -341,7 +350,8 @@ impl Element for DocumentView {
                 cx.focus(&self.focus);
                 let keymaps = self.keymaps.clone();
                 let editor = self.editor.clone();
-                // // println!("{:?}", highlights);
+
+                let view_id = self.view_id;
                 cx.on_key_event::<KeyDownEvent>(move |ev, phase, cx| {
                     if phase != DispatchPhase::Bubble {
                         return;
@@ -362,22 +372,21 @@ impl Element for DocumentView {
                             jobs: &mut helix_term::job::Jobs::new(),
                         };
                         let res = handle_key_result(mode, &mut ctx, res);
+                        editor.ensure_cursor_in_view(view_id);
                         cx.notify();
                         cx.emit(crate::Update);
                         res
                     });
                     println!("res {:?}", res);
-                    if let Some(view_id) = cx.parent_view_id() {
-                        println!("redraw?");
-                        cx.notify(view_id);
-                    }
                 });
                 //}
 
                 let editor = self.editor.read(cx);
 
+                let view = editor.tree.get(self.view_id);
+                println!("offset {:?}", view.offset);
                 let cursor = editor.cursor();
-                let cursor_pos = cursor.0;
+                let (cursor_pos, _cursor_kind) = cursor;
                 println!("cursor @ {:?}", cursor);
 
                 let theme = &editor.theme;
@@ -386,28 +395,40 @@ impl Element for DocumentView {
                 let window_style = theme.get("ui.window");
                 let border_color = color_to_hsla(window_style.fg.unwrap());
                 let cursor_style = theme.get("ui.cursor.primary");
-                println!("{:?}", cursor_style);
-
                 let bg = fill(bounds, bg_color);
                 let borders = outline(bounds, border_color);
-
                 let fg_color = color_to_hsla(
                     default_style
                         .fg
                         .unwrap_or(helix_view::graphics::Color::White),
                 );
-                let document = editor.document(self.doc).unwrap();
+
+                let document = editor.document(self.doc_id).unwrap();
+                let gutter_width = view.gutter_offset(document);
+                let gutter_overflow = gutter_width == 0;
+                if !gutter_overflow {
+                    println!("need to render gutter {}", gutter_width);
+                }
+
                 let text = document.text();
                 let lines = std::cmp::min(after_layout.rows, text.len_lines());
                 let mut shaped_lines = Vec::new();
 
-                let mut char_idx = 0;
                 let mut cursor_text = None;
 
-                for (line_nr, line) in text.lines().take(lines).enumerate() {
+                let cursor_row = cursor_pos.map(|p| p.row);
+                println!("ROW: {:?}", cursor_row);
+                let anchor = view.offset.anchor;
+                let mut char_idx = anchor;
+                let row = text.char_to_line(anchor.min(text.len_chars()));
+                println!("first row is {}", row);
+
+                for (line_nr, line) in text.lines().skip(row).take(lines).enumerate() {
                     let is_cursor_line = cursor_pos.map(|p| p.row == line_nr).unwrap_or(false);
                     if is_cursor_line {
-                        if let Some(text) = line.get_char(cursor_pos.map(|p| p.col).unwrap()) {
+                        if let Some(text) = line
+                            .get_char(cursor_pos.map(|p| p.col - gutter_width as usize).unwrap())
+                        {
                             let cursor_bg = cursor_style
                                 .bg
                                 .map(|fg| color_to_hsla(fg))
@@ -436,15 +457,25 @@ impl Element for DocumentView {
                             cursor_text = Some(shaped);
                         }
                     }
-                    //println!("string `{}`", line);
                     let len = line.len_chars();
                     let mut runs = vec![];
                     let regions = highlights.get(char_idx, char_idx + len);
 
                     let mut previous_end = 0;
                     for reg in regions {
-                        //println!("region: {:?}", reg);
                         let HighlightRegion { start, end, hl } = reg;
+                        if char_idx > *start {
+                            println!("string `{}`", line);
+
+                            let row = text.char_to_line(char_idx);
+                            let row_start = text.line_to_char(row);
+                            println!("current row is {} row start {}", row, row_start);
+                            println!(
+                                "start {} end {} char_idx {} previous_end {}",
+                                start, end, char_idx, previous_end
+                            );
+                            continue;
+                        }
                         let start = start - char_idx;
                         let end = end - char_idx;
 
@@ -491,11 +522,12 @@ impl Element for DocumentView {
                 }
 
                 cx.paint_quad(bg);
-                cx.paint_quad(borders);
+                //cx.paint_quad(borders);
 
                 let mut origin = bounds.origin;
-                origin.x += px(2.);
+                origin.x += px(2.) + (after_layout.cell_width * gutter_width as f32);
                 origin.y += px(1.);
+                // draw document
                 for line in shaped_lines {
                     line.paint(origin, after_layout.line_height, cx).unwrap();
                     origin.y += after_layout.line_height;
@@ -550,7 +582,8 @@ impl Render for Workspace {
         let mut docs = vec![];
         for (view, _is_focused) in editor.tree.views() {
             let doc = editor.document(view.doc).unwrap();
-            let id = doc.id();
+            let doc_id = doc.id();
+            let view_id = view.id;
             let style = TextStyle {
                 font_family: "JetBrains Mono".into(),
                 font_size: px(14.0).into(),
@@ -560,7 +593,8 @@ impl Render for Workspace {
             let doc_view = DocumentView::new(
                 self.editor.clone(),
                 self.keymaps.clone(),
-                id,
+                doc_id,
+                view_id,
                 style,
                 &focus_handle,
             );

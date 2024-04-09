@@ -1,9 +1,8 @@
 use arc_swap::{access::Map, ArcSwap};
-use std::{collections::btree_map::Entry, io::stdin, path::Path, sync::Arc};
+use std::{path::Path, sync::Arc};
 
 use helix_core::{diagnostic::Severity, pos_at_coords, syntax, Position, Selection};
 
-use helix_stdx::path::get_relative_path;
 use helix_term::{
     args::Args,
     config::Config,
