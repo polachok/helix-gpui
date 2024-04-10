@@ -72,6 +72,7 @@ struct DocumentView {
     style: TextStyle,
     interactivity: Interactivity,
     focus: FocusHandle,
+    is_focused: bool,
 }
 
 impl DocumentView {
@@ -82,6 +83,7 @@ impl DocumentView {
         view_id: ViewId,
         style: TextStyle,
         focus: &FocusHandle,
+        is_focused: bool,
     ) -> Self {
         Self {
             editor,
@@ -91,6 +93,7 @@ impl DocumentView {
             style,
             interactivity: Interactivity::default(),
             focus: focus.clone(),
+            is_focused,
         }
         .track_focus(&focus)
         .element
@@ -112,6 +115,16 @@ struct HighlightRegion {
     hl: Highlight,
 }
 
+impl HighlightRegion {
+    fn offset(&self, offset: usize) -> Self {
+        Self {
+            start: self.start - offset,
+            end: self.end - offset,
+            hl: self.hl,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Highlights(Vec<HighlightRegion>);
 
@@ -129,15 +142,32 @@ impl Highlights {
 }
 
 impl DocumentView {
-    fn syntax_highlights(&self, cx: &mut ElementContext) -> Highlights {
-        let editor = self.editor.read(cx);
-        let doc = editor.document(self.doc_id).unwrap();
+    fn viewport_byte_range(
+        text: helix_core::RopeSlice,
+        row: usize,
+        height: u16,
+    ) -> std::ops::Range<usize> {
+        // Calculate viewport byte ranges:
+        // Saturating subs to make it inclusive zero indexing.
+        let last_line = text.len_lines().saturating_sub(1);
+        let last_visible_line = (row + height as usize).saturating_sub(1).min(last_line);
+        let start = text.line_to_byte(row.min(last_line));
+        let end = text.line_to_byte(last_visible_line + 1);
+
+        start..end
+    }
+
+    fn syntax_highlights(doc: &helix_view::Document, anchor: usize, height: u16) -> Highlights {
         let text = doc.text().slice(..);
+        let row = text.char_to_line(anchor.min(text.len_chars()));
+        let range = Self::viewport_byte_range(text, row, height);
+        println!("BYTES RANGE {:?}", range);
+
         match doc.syntax() {
             Some(syn) => {
                 let iter = syn
                     // TODO: range doesn't actually restrict source, just highlight range
-                    .highlight_iter(text.slice(..), None /* todo */, None)
+                    .highlight_iter(text.slice(..), Some(range), None)
                     .map(|event| event.unwrap())
                     .map(move |event| match event {
                         // TODO: use byte slices directly
@@ -173,7 +203,11 @@ impl DocumentView {
                 }
                 Highlights(regions)
             }
-            None => Highlights(vec![]),
+            None => Highlights(vec![HighlightRegion {
+                start: text.byte_to_char(range.start),
+                end: text.byte_to_char(range.end),
+                hl: Highlight(0),
+            }]),
         }
     }
 }
@@ -332,8 +366,6 @@ impl Element for DocumentView {
         cx: &mut ElementContext,
     ) {
         println!("{:?} {:?} {:?}", self.doc_id, after_layout, bounds);
-        let highlights = self.syntax_highlights(cx);
-
         let mode = {
             let editor = self.editor.read(cx);
             editor.mode()
@@ -345,9 +377,12 @@ impl Element for DocumentView {
                 cx.focus(&focus);
             });
 
+        let is_focused = self.is_focused;
         self.interactivity
             .paint(bounds, after_layout.hitbox.as_ref(), cx, |_, cx| {
-                cx.focus(&self.focus);
+                if is_focused {
+                    cx.focus(&self.focus);
+                }
                 let keymaps = self.keymaps.clone();
                 let editor = self.editor.clone();
 
@@ -411,115 +446,84 @@ impl Element for DocumentView {
                 }
 
                 let text = document.text();
-                let lines = std::cmp::min(after_layout.rows, text.len_lines());
-                let mut shaped_lines = Vec::new();
 
                 let mut cursor_text = None;
 
                 let cursor_row = cursor_pos.map(|p| p.row);
                 println!("ROW: {:?}", cursor_row);
                 let anchor = view.offset.anchor;
-                let mut char_idx = anchor;
+                let total_lines = text.len_lines();
                 let row = text.char_to_line(anchor.min(text.len_chars()));
                 println!("first row is {}", row);
+                let last_row = (row + after_layout.rows).min(total_lines);
+                println!("last row is {}", last_row);
+                let end_char = text.line_to_char(std::cmp::min(last_row + 1, total_lines));
 
-                for (line_nr, line) in text.lines().skip(row).take(lines).enumerate() {
-                    let is_cursor_line = cursor_pos.map(|p| p.row == line_nr).unwrap_or(false);
-                    if is_cursor_line {
-                        if let Some(text) = line
-                            .get_char(cursor_pos.map(|p| p.col - gutter_width as usize).unwrap())
-                        {
-                            let cursor_bg = cursor_style
-                                .bg
-                                .map(|fg| color_to_hsla(fg))
-                                .unwrap_or(fg_color);
+                let text_view = text.slice(anchor..end_char);
+                let str: SharedString = RopeWrapper(text_view).into();
 
-                            let cursor_fg = cursor_style
-                                .fg
-                                .map(|fg| color_to_hsla(fg))
-                                .unwrap_or(fg_color);
+                let highlights =
+                    Self::syntax_highlights(document, anchor, after_layout.rows as u16);
+                let regions = highlights.get(anchor, end_char);
 
-                            let run = TextRun {
-                                len: 1,
-                                font: self.style.font(),
-                                color: cursor_fg,
-                                background_color: Some(cursor_bg),
-                                underline: None,
-                                strikethrough: None,
-                            };
+                let mut runs = vec![];
+                let mut previous_end = anchor;
+                let mut previous_region: Option<HighlightRegion> = None;
 
-                            let text = if text == '\n' { ' ' } else { text };
+                for reg in regions {
+                    let HighlightRegion { start, end, hl } = *reg;
 
-                            let shaped = cx
-                                .text_system()
-                                .shape_line(text.to_string().into(), after_layout.font_size, &[run]) // todo: runs
-                                .unwrap();
-                            cursor_text = Some(shaped);
+                    if let Some(prev) = previous_region {
+                        if prev.start == start && prev.end == end {
+                            println!(
+                                "replacing previous region {:?} with new region {:?}",
+                                reg, prev
+                            );
+                            runs.pop();
                         }
                     }
-                    let len = line.len_chars();
-                    let mut runs = vec![];
-                    let regions = highlights.get(char_idx, char_idx + len);
 
-                    let mut previous_end = 0;
-                    for reg in regions {
-                        let HighlightRegion { start, end, hl } = reg;
-                        if char_idx > *start {
-                            println!("string `{}`", line);
+                    if start > end_char || previous_end > end_char {
+                        break;
+                    }
 
-                            let row = text.char_to_line(char_idx);
-                            let row_start = text.line_to_char(row);
-                            println!("current row is {} row start {}", row, row_start);
-                            println!(
-                                "start {} end {} char_idx {} previous_end {}",
-                                start, end, char_idx, previous_end
-                            );
-                            continue;
-                        }
-                        let start = start - char_idx;
-                        let end = end - char_idx;
-
-                        let style = theme.highlight(hl.0);
-                        let fg = style.fg.map(|fg| color_to_hsla(fg));
-                        //let bg = style.fg.map(|fg| color_to_hsla(fg));
-                        let len = end - start;
-
-                        // reset to default style
-                        if start > previous_end {
-                            let len = start - previous_end;
-
-                            let run = TextRun {
-                                len,
-                                font: self.style.font(),
-                                color: fg_color,
-                                background_color: Some(bg_color),
-                                underline: None,
-                                strikethrough: None,
-                            };
-                            runs.push(run);
-                        }
+                    // if previous run didn't end at the start of this region
+                    // we have to insert default run
+                    if start > previous_end {
+                        let len = start - previous_end;
 
                         let run = TextRun {
                             len,
                             font: self.style.font(),
-                            color: fg.unwrap_or(fg_color),
+                            color: fg_color,
                             background_color: Some(bg_color),
                             underline: None,
                             strikethrough: None,
                         };
                         runs.push(run);
-                        previous_end = end;
                     }
 
-                    let str = RopeWrapper(line).into();
-                    //println!("runs {:?}", runs);
-                    let shaped = cx
-                        .text_system()
-                        .shape_line(str, after_layout.font_size, &runs) // todo: runs
-                        .unwrap();
-                    shaped_lines.push(shaped);
-                    char_idx += len;
+                    let style = theme.highlight(hl.0);
+                    let fg = style.fg.map(|fg| color_to_hsla(fg));
+                    //let bg = style.fg.map(|fg| color_to_hsla(fg));
+                    let len = end - start;
+                    let run = TextRun {
+                        len,
+                        font: self.style.font(),
+                        color: fg.unwrap_or(fg_color),
+                        background_color: Some(bg_color),
+                        underline: None,
+                        strikethrough: None,
+                    };
+                    runs.push(run);
+                    previous_end = end;
+                    previous_region = Some(*reg);
                 }
+
+                let shaped_lines = cx
+                    .text_system()
+                    .shape_text(str, after_layout.font_size, &runs, None)
+                    .unwrap();
 
                 cx.paint_quad(bg);
                 //cx.paint_quad(borders);
@@ -568,7 +572,7 @@ struct RopeWrapper<'a>(RopeSlice<'a>);
 impl<'a> Into<SharedString> for RopeWrapper<'a> {
     fn into(self) -> SharedString {
         let cow: Cow<'_, str> = self.0.into();
-        (cow.to_string().trim_end().to_string()).into() // this is crazy
+        cow.to_string().into() // this is crazy
     }
 }
 
@@ -580,7 +584,7 @@ impl Render for Workspace {
         let bg_color = color_to_hsla(default_style.bg.unwrap());
 
         let mut docs = vec![];
-        for (view, _is_focused) in editor.tree.views() {
+        for (view, is_focused) in editor.tree.views() {
             let doc = editor.document(view.doc).unwrap();
             let doc_id = doc.id();
             let view_id = view.id;
@@ -597,6 +601,7 @@ impl Render for Workspace {
                 view_id,
                 style,
                 &focus_handle,
+                is_focused,
             );
             docs.push(doc_view);
         }
@@ -605,6 +610,10 @@ impl Render for Workspace {
 
         eprintln!("rendering workspace");
         div()
+            .on_action(|&crate::About, _cx| {
+                eprintln!("hello");
+            })
+            .on_action(|&crate::Quit, _cx| eprintln!("quit?"))
             .id("workspace")
             .bg(bg_color)
             .flex()
