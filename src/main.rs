@@ -11,6 +11,8 @@ use gpui::{
 };
 
 mod application;
+mod document;
+mod utils;
 mod workspace;
 
 fn setup_logging(verbosity: u64) -> Result<()> {
@@ -49,7 +51,7 @@ fn main() -> Result<()> {
     let editor = app.editor;
     let keymaps = app.keymaps;
     drop(_guard);
-    gui_main(editor, keymaps);
+    gui_main(editor, keymaps, handle.clone());
     Ok(())
 }
 
@@ -102,7 +104,7 @@ pub struct Update;
 
 impl gpui::EventEmitter<Update> for Editor {}
 
-fn gui_main(editor: Editor, keymaps: helix_term::keymap::Keymaps) {
+fn gui_main(editor: Editor, keymaps: helix_term::keymap::Keymaps, handle: tokio::runtime::Handle) {
     App::new().run(|cx: &mut AppContext| {
         let options = window_options(cx);
 
@@ -119,7 +121,11 @@ fn gui_main(editor: Editor, keymaps: helix_term::keymap::Keymaps) {
                     cx.notify()
                 })
                 .detach();
-                workspace::Workspace { editor, keymaps }
+                workspace::Workspace {
+                    editor,
+                    keymaps,
+                    handle,
+                }
             })
         });
     })
