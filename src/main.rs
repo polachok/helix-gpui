@@ -6,8 +6,8 @@ use helix_term::config::{Config, ConfigLoadError};
 use helix_view::Editor;
 
 use gpui::{
-    App, AppContext, Context as _, ModelContext as _, TitlebarOptions, VisualContext as _,
-    WindowBackgroundAppearance, WindowKind, WindowOptions,
+    actions, App, AppContext, Context as _, Menu, MenuItem, ModelContext as _, TitlebarOptions,
+    VisualContext as _, WindowBackgroundAppearance, WindowKind, WindowOptions,
 };
 
 mod application;
@@ -71,6 +71,33 @@ fn window_options(_cx: &mut AppContext) -> gpui::WindowOptions {
     }
 }
 
+actions!(workspace, [About, Quit]);
+
+fn app_menus() -> Vec<Menu<'static>> {
+    vec![
+        Menu {
+            name: "Helix",
+            items: vec![
+                MenuItem::action("About", About),
+                MenuItem::separator(),
+                // MenuItem::action("Settings", OpenSettings),
+                // MenuItem::separator(),
+                // MenuItem::action("Hide Helix", Hide),
+                // MenuItem::action("Hide Others", HideOthers),
+                // MenuItem::action("Show All", ShowAll),
+                MenuItem::action("Quit", Quit),
+            ],
+        },
+        Menu {
+            name: "File",
+            items: vec![
+                // MenuItem::action("Open File", OpenFile),
+                // MenuItem::action("Open Directory", OpenDirectory),
+            ],
+        },
+    ]
+}
+
 pub struct Update;
 
 impl gpui::EventEmitter<Update> for Editor {}
@@ -78,11 +105,13 @@ impl gpui::EventEmitter<Update> for Editor {}
 fn gui_main(editor: Editor, keymaps: helix_term::keymap::Keymaps) {
     App::new().run(|cx: &mut AppContext| {
         let options = window_options(cx);
+
         cx.open_window(options, |cx| {
             // let window = cx.window_handle();
             let editor = cx.new_model(|_mc| editor);
             let keymaps = cx.new_model(|_mc| keymaps);
             cx.activate(true);
+            cx.set_menus(app_menus());
 
             cx.new_view(|cx| {
                 cx.subscribe(&editor, |_, _, _, cx| {
