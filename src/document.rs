@@ -7,7 +7,7 @@ use helix_core::{
     syntax::{Highlight, HighlightEvent},
 };
 use helix_term::keymap::Keymaps;
-use helix_view::{graphics::CursorKind, DocumentId, Editor, ViewId};
+use helix_view::{graphics::CursorKind, Document, DocumentId, Editor, Theme, View, ViewId};
 
 use crate::utils::{color_to_hsla, translate_key};
 
@@ -118,7 +118,6 @@ impl DocumentView {
         let text = doc.text().slice(..);
         let row = text.char_to_line(anchor.min(text.len_chars()));
         let range = Self::viewport_byte_range(text, row, height);
-        println!("BYTES RANGE {:?}", range);
 
         match doc.syntax() {
             Some(syn) => {
@@ -165,6 +164,86 @@ impl DocumentView {
                 end: text.byte_to_char(range.end),
                 hl: Highlight(0),
             }]),
+        }
+    }
+
+    fn init_gutter<'d, T>(
+        editor: &'d Editor,
+        doc: &'d Document,
+        view: &'d View,
+        theme: &Theme,
+        is_focused: bool,
+        gutters: &mut Vec<GutterDecoration<'d, T>>,
+    ) where
+        T: GutterRenderer,
+    {
+        let text = doc.text().slice(..);
+        let viewport = view.area;
+        let cursors: std::rc::Rc<[_]> = doc
+            .selection(view.id)
+            .iter()
+            .map(|range| range.cursor_line(text))
+            .collect();
+
+        let mut offset = 0;
+
+        let gutter_style = theme.get("ui.gutter");
+        let gutter_selected_style = theme.get("ui.gutter.selected");
+        let gutter_style_virtual = theme.get("ui.gutter.virtual");
+        let gutter_selected_style_virtual = theme.get("ui.gutter.selected.virtual");
+
+        for gutter_type in view.gutters() {
+            let mut gutter = gutter_type.style(editor, doc, view, theme, is_focused);
+            let width = gutter_type.width(view, doc);
+            // avoid lots of small allocations by reusing a text buffer for each line
+            let mut text = String::with_capacity(width);
+            let cursors = cursors.clone();
+            let gutter_decoration = move |pos: LinePos, renderer: &mut T| {
+                // TODO handle softwrap in gutters
+                let selected = cursors.contains(&pos.doc_line);
+                let x = viewport.x + offset;
+                let y = viewport.y + pos.visual_line;
+
+                let gutter_style = match (selected, pos.first_visual_line) {
+                    (false, true) => gutter_style,
+                    (true, true) => gutter_selected_style,
+                    (false, false) => gutter_style_virtual,
+                    (true, false) => gutter_selected_style_virtual,
+                };
+
+                if let Some(style) =
+                    gutter(pos.doc_line, selected, pos.first_visual_line, &mut text)
+                {
+                    println!(
+                        "{:?} {:?} `{text}``",
+                        gutter_type,
+                        gutter_style.patch(style)
+                    );
+                    renderer.render(x, y, width, gutter_style.patch(style), Some(&text));
+                } else {
+                    renderer.render(x, y, width, gutter_style, None);
+                    println!("{:?} {:?} `{text}` `{width}`", gutter_type, gutter_style);
+                }
+                // {
+                //     renderer
+                //         .surface
+                //         .set_stringn(x, y, &text, width, gutter_style.patch(style));
+                // } else {
+                //     renderer.surface.set_style(
+                //         Rect {
+                //             x,
+                //             y,
+                //             width: width as u16,
+                //             height: 1,
+                //         },
+                //         gutter_style,
+                //     );
+                // }
+                text.clear();
+            };
+            gutters.push(Box::new(gutter_decoration));
+
+            offset += width as u16;
         }
     }
 }
@@ -281,14 +360,10 @@ impl Element for DocumentView {
         after_layout: &mut Self::AfterLayout,
         cx: &mut ElementContext,
     ) {
-        println!("{:?} {:?} {:?}", self.doc_id, after_layout, bounds);
-        let mode = {
-            let editor = self.editor.read(cx);
-            editor.mode()
-        };
+        // println!("{:?} {:?} {:?}", self.doc_id, after_layout, bounds);
         let focus = self.focus.clone();
         self.interactivity
-            .on_mouse_down(MouseButton::Left, move |ev, cx| {
+            .on_mouse_down(MouseButton::Left, move |_ev, cx| {
                 println!("MOUSE DOWN");
                 cx.focus(&focus);
             });
@@ -310,10 +385,10 @@ impl Element for DocumentView {
                 let editor = self.editor.read(cx);
 
                 let view = editor.tree.get(self.view_id);
-                println!("offset {:?}", view.offset);
+                // println!("offset {:?}", view.offset);
                 let cursor = editor.cursor();
                 let (cursor_pos, _cursor_kind) = cursor;
-                println!("cursor @ {:?}", cursor);
+                // println!("cursor @ {:?}", cursor);
 
                 let theme = &editor.theme;
                 let default_style = theme.get("ui.background");
@@ -330,6 +405,7 @@ impl Element for DocumentView {
                 );
 
                 let document = editor.document(self.doc_id).unwrap();
+
                 let gutter_width = view.gutter_offset(document);
                 let gutter_overflow = gutter_width == 0;
                 if !gutter_overflow {
@@ -338,21 +414,22 @@ impl Element for DocumentView {
 
                 let text = document.text();
 
-                let mut cursor_text = None; // TODO
+                let cursor_text = None; // TODO
 
                 let cursor_row = cursor_pos.map(|p| p.row);
-                println!("ROW: {:?}", cursor_row);
+                // println!("ROW: {:?}", cursor_row);
                 let anchor = view.offset.anchor;
                 let total_lines = text.len_lines();
-                let row = text.char_to_line(anchor.min(text.len_chars()));
-                println!("first row is {}", row);
-                let last_row = (row + after_layout.rows).min(total_lines);
-                println!("last row is {}", last_row);
+                let first_row = text.char_to_line(anchor.min(text.len_chars()));
+                // println!("first row is {}", row);
+                let last_row = (first_row + after_layout.rows).min(total_lines);
+                // println!("last row is {}", last_row);
                 let end_char = text.line_to_char(std::cmp::min(last_row + 1, total_lines));
 
                 let text_view = text.slice(anchor..end_char);
                 let str: SharedString = RopeWrapper(text_view).into();
 
+                // TODO: refactor highlighting into separate function
                 let highlights =
                     Self::syntax_highlights(document, anchor, after_layout.rows as u16);
                 let regions = highlights.get(anchor, end_char);
@@ -427,6 +504,7 @@ impl Element for DocumentView {
                     line.paint(origin, after_layout.line_height, cx).unwrap();
                     origin.y += after_layout.line_height;
                 }
+                // draw cursor
                 match cursor {
                     (Some(position), kind) => {
                         let helix_core::Position { row, col } = position;
@@ -453,6 +531,97 @@ impl Element for DocumentView {
                         cursor.paint(origin, cx);
                     }
                     (None, _) => {}
+                }
+                // draw gutter
+                {
+                    let editor = self.editor.read(cx);
+                    let theme = &editor.theme;
+                    let view = editor.tree.get(self.view_id);
+                    let document = editor.document(self.doc_id).unwrap();
+                    let it = (first_row..last_row)
+                        .enumerate()
+                        .map(|(visual_line, doc_line)| LinePos {
+                            first_visual_line: true,
+                            doc_line,
+                            visual_line: visual_line as u16,
+                            start_char_idx: 0,
+                        });
+
+                    struct Lol<'a> {
+                        after_layout: &'a DocumentLayout,
+                        text_system: std::sync::Arc<WindowTextSystem>,
+                        lines: Vec<(Point<Pixels>, ShapedLine)>,
+                        style: TextStyle,
+                        origin: Point<Pixels>,
+                    }
+                    impl<'a> GutterRenderer for Lol<'a> {
+                        fn render(
+                            &mut self,
+                            x: u16,
+                            y: u16,
+                            width: usize,
+                            style: helix_view::graphics::Style,
+                            text: Option<&str>,
+                        ) {
+                            println!("RENDERING GUTTER {:?} with width {width} @ {x} {y}", text);
+                            let origin_y = self.origin.y + self.after_layout.line_height * y as f32;
+                            let origin_x = self.origin.x + self.after_layout.cell_width * x as f32;
+                            let fg_color =
+                                style.fg.map(color_to_hsla).unwrap_or(hsla(0., 0., 1., 1.));
+                            if let Some(text) = text {
+                                let run = TextRun {
+                                    len: text.len(),
+                                    font: self.style.font(),
+                                    color: fg_color,
+                                    background_color: None,
+                                    underline: None,
+                                    strikethrough: None,
+                                };
+                                let shaped = self
+                                    .text_system
+                                    .shape_line(
+                                        text.to_string().into(),
+                                        self.after_layout.font_size,
+                                        &[run],
+                                    )
+                                    .unwrap();
+                                self.lines.push((
+                                    Point {
+                                        x: origin_x,
+                                        y: origin_y,
+                                    },
+                                    shaped,
+                                ));
+                            }
+                        }
+                    }
+
+                    let mut lol = Lol {
+                        after_layout,
+                        text_system: cx.text_system().clone(),
+                        lines: Vec::new(),
+                        style: self.style.clone(),
+                        origin: bounds.origin,
+                    };
+                    {
+                        let mut gutters = Vec::new();
+                        Self::init_gutter::<Lol>(
+                            editor,
+                            document,
+                            view,
+                            theme,
+                            is_focused,
+                            &mut gutters,
+                        );
+                        for line in it {
+                            for gutter in &mut gutters {
+                                gutter(line, &mut lol)
+                            }
+                        }
+                    }
+                    for (origin, line) in lol.lines {
+                        line.paint(origin, after_layout.line_height, cx).unwrap();
+                    }
                 }
             });
     }
@@ -589,4 +758,33 @@ impl IntoElement for DocumentView {
     fn into_element(self) -> Self {
         self
     }
+}
+
+type GutterDecoration<'a, T: GutterRenderer> = Box<dyn FnMut(LinePos, &mut T) + 'a>;
+
+trait GutterRenderer {
+    fn render(
+        &mut self,
+        x: u16,
+        y: u16,
+        width: usize,
+        style: helix_view::graphics::Style,
+        text: Option<&str>,
+    );
+}
+
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+struct LinePos {
+    /// Indicates whether the given visual line
+    /// is the first visual line of the given document line
+    pub first_visual_line: bool,
+    /// The line index of the document line that contains the given visual line
+    pub doc_line: usize,
+    /// Vertical offset from the top of the inner view area
+    pub visual_line: u16,
+    /// The first char index of this visual line.
+    /// Note that if the visual line is entirely filled by
+    /// a very long inline virtual text then this index will point
+    /// at the next (non-virtual) char after this visual line
+    pub start_char_idx: usize,
 }

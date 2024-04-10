@@ -1,13 +1,6 @@
-use std::borrow::Cow;
-
 use gpui::*;
-use helix_core::{
-    graphemes::ensure_grapheme_boundary_next_byte,
-    ropey::RopeSlice,
-    syntax::{Highlight, HighlightEvent},
-};
 use helix_term::keymap::Keymaps;
-use helix_view::{graphics::CursorKind, DocumentId, Editor, ViewId};
+use helix_view::Editor;
 
 use crate::document::DocumentView;
 
