@@ -21,13 +21,22 @@ impl Render for Workspace {
         let focus_handle = cx.focus_handle();
         let editor = self.editor.read(cx);
         let default_style = editor.theme.get("ui.background");
+        let default_ui_text = editor.theme.get("ui.text");
         let bg_color = crate::utils::color_to_hsla(default_style.bg.unwrap());
+        let text_color = crate::utils::color_to_hsla(default_ui_text.fg.unwrap());
 
         let mut docs = vec![];
+        let mut focused_file_name = None;
+
         for (view, is_focused) in editor.tree.views() {
             let doc = editor.document(view.doc).unwrap();
             let doc_id = doc.id();
             let view_id = view.id;
+
+            if is_focused {
+                focused_file_name = doc.path();
+            }
+
             let style = TextStyle {
                 font_family: "JetBrains Mono".into(),
                 font_size: px(14.0).into(),
@@ -47,7 +56,24 @@ impl Render for Workspace {
             docs.push(doc_view);
         }
 
-        let top_bar = div().w_full().flex().flex_none().h_8();
+        let label = if let Some(path) = focused_file_name {
+            div()
+                .flex_shrink()
+                .font("SF Pro")
+                .text_color(text_color)
+                .text_size(px(12.))
+                .child(format!("{} - Helix", path.display()))
+        } else {
+            div().flex()
+        };
+        let top_bar = div()
+            .w_full()
+            .flex()
+            .flex_none()
+            .h_8()
+            .justify_center()
+            .items_center()
+            .child(label);
 
         eprintln!("rendering workspace");
 

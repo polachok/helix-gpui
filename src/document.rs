@@ -429,9 +429,12 @@ impl Element for DocumentView {
                 let text_view = text.slice(anchor..end_char);
                 let str: SharedString = RopeWrapper(text_view).into();
 
-                // TODO: refactor highlighting into separate function
-                let highlights =
-                    Self::syntax_highlights(document, anchor, after_layout.rows as u16);
+                // TODO: refactor all highlighting into separate function
+                let highlights = Self::syntax_highlights(
+                    document,
+                    anchor,
+                    total_lines.min(after_layout.rows + 1) as u16,
+                );
                 let regions = highlights.get(anchor, end_char);
 
                 let mut runs = vec![];
