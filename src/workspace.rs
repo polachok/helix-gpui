@@ -50,11 +50,31 @@ impl Render for Workspace {
         let top_bar = div().w_full().flex().flex_none().h_8();
 
         eprintln!("rendering workspace");
+
         div()
-            .on_action(|&crate::About, _cx| {
+            .on_action(move |&crate::About, _cx| {
                 eprintln!("hello");
             })
-            .on_action(|&crate::Quit, _cx| eprintln!("quit?"))
+            .on_action({
+                let handle = self.handle.clone();
+                let editor = self.editor.clone();
+
+                move |&crate::Quit, cx| {
+                    eprintln!("quit?");
+                    quit(editor.clone(), handle.clone(), cx);
+                    eprintln!("quit!");
+                    cx.quit();
+                }
+            })
+            .on_action({
+                let handle = self.handle.clone();
+                let editor = self.editor.clone();
+
+                move |&crate::OpenFile, cx| {
+                    println!("open file");
+                    open(editor.clone(), handle.clone(), cx)
+                }
+            })
             .id("workspace")
             .bg(bg_color)
             .flex()
@@ -65,4 +85,37 @@ impl Render for Workspace {
             .child(top_bar)
             .children(docs)
     }
+}
+
+fn open(editor: Model<Editor>, handle: tokio::runtime::Handle, cx: &mut WindowContext) {
+    let path = cx.prompt_for_paths(PathPromptOptions {
+        files: true,
+        directories: false,
+        multiple: false,
+    });
+    cx.spawn(move |mut cx| async move {
+        if let Ok(Some(path)) = path.await {
+            use helix_view::editor::Action;
+            cx.update(move |cx| {
+                editor.update(cx, move |editor, cx| {
+                    let path = &path[0];
+                    println!("PATH IS {}", path.display());
+                    let _guard = handle.enter();
+                    editor.open(path, Action::Replace);
+                })
+            });
+        }
+    })
+    .detach();
+}
+
+fn quit(editor: Model<Editor>, rt: tokio::runtime::Handle, cx: &mut WindowContext) {
+    editor.update(cx, |editor, _cx| {
+        let _guard = rt.enter();
+        rt.block_on(async { editor.flush_writes().await }).unwrap();
+        let views: Vec<_> = editor.tree.views().map(|(view, _)| view.id).collect();
+        for view_id in views {
+            editor.close(view_id);
+        }
+    });
 }

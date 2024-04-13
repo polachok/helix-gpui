@@ -214,15 +214,15 @@ impl DocumentView {
                 if let Some(style) =
                     gutter(pos.doc_line, selected, pos.first_visual_line, &mut text)
                 {
-                    println!(
-                        "{:?} {:?} `{text}``",
-                        gutter_type,
-                        gutter_style.patch(style)
-                    );
+                    // println!(
+                    //     "{:?} {:?} `{text}``",
+                    //     gutter_type,
+                    //     gutter_style.patch(style)
+                    // );
                     renderer.render(x, y, width, gutter_style.patch(style), Some(&text));
                 } else {
                     renderer.render(x, y, width, gutter_style, None);
-                    println!("{:?} {:?} `{text}` `{width}`", gutter_type, gutter_style);
+                    // println!("{:?} {:?} `{text}` `{width}`", gutter_type, gutter_style);
                 }
                 // {
                 //     renderer
@@ -563,7 +563,7 @@ impl Element for DocumentView {
                             style: helix_view::graphics::Style,
                             text: Option<&str>,
                         ) {
-                            println!("RENDERING GUTTER {:?} with width {width} @ {x} {y}", text);
+                            // println!("RENDERING GUTTER {:?} with width {width} @ {x} {y}", text);
                             let origin_y = self.origin.y + self.after_layout.line_height * y as f32;
                             let origin_x = self.origin.x + self.after_layout.cell_width * x as f32;
                             let fg_color =
@@ -760,7 +760,7 @@ impl IntoElement for DocumentView {
     }
 }
 
-type GutterDecoration<'a, T: GutterRenderer> = Box<dyn FnMut(LinePos, &mut T) + 'a>;
+type GutterDecoration<'a, T> = Box<dyn FnMut(LinePos, &mut T) + 'a>;
 
 trait GutterRenderer {
     fn render(

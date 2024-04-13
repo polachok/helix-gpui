@@ -73,7 +73,7 @@ fn window_options(_cx: &mut AppContext) -> gpui::WindowOptions {
     }
 }
 
-actions!(workspace, [About, Quit]);
+actions!(workspace, [About, Quit, OpenFile]);
 
 fn app_menus() -> Vec<Menu<'static>> {
     vec![
@@ -93,7 +93,7 @@ fn app_menus() -> Vec<Menu<'static>> {
         Menu {
             name: "File",
             items: vec![
-                // MenuItem::action("Open File", OpenFile),
+                MenuItem::action("Open File", OpenFile),
                 // MenuItem::action("Open Directory", OpenDirectory),
             ],
         },
@@ -109,9 +109,9 @@ fn gui_main(editor: Editor, keymaps: helix_term::keymap::Keymaps, handle: tokio:
         let options = window_options(cx);
 
         cx.open_window(options, |cx| {
-            // let window = cx.window_handle();
             let editor = cx.new_model(|_mc| editor);
             let keymaps = cx.new_model(|_mc| keymaps);
+
             cx.activate(true);
             cx.set_menus(app_menus());
 
