@@ -3,6 +3,7 @@ use helix_term::keymap::Keymaps;
 use helix_view::Editor;
 
 use crate::document::DocumentView;
+use crate::statusline::StatusLine;
 
 pub struct Workspace {
     pub editor: Model<Editor>,
@@ -43,17 +44,37 @@ impl Render for Workspace {
                 ..Default::default()
             };
 
-            let doc_view = DocumentView::new(
+            let doc_elem = DocumentView::new(
                 self.editor.clone(),
                 self.keymaps.clone(),
                 doc_id,
                 view_id,
-                style,
+                style.clone(),
                 &focus_handle,
                 is_focused,
                 self.handle.clone(),
             );
-            docs.push(doc_view);
+            // let style = TextStyle {
+            //     font_family: "SF Pro".into(),
+            //     font_size: px(12.).into(),
+            //     ..Default::default()
+            // };
+            let status = StatusLine::new(
+                self.editor.clone(),
+                doc_id,
+                view_id,
+                is_focused,
+                style.clone(),
+            );
+
+            let view = div()
+                .w_full()
+                .h_full()
+                .flex()
+                .flex_col()
+                .child(doc_elem)
+                .child(status);
+            docs.push(view);
         }
 
         let label = if let Some(path) = focused_file_name {

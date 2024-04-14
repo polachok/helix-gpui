@@ -294,6 +294,7 @@ impl Element for DocumentView {
         _before_layout: &mut Self::BeforeLayout,
         cx: &mut ElementContext,
     ) -> Self::AfterLayout {
+        println!("EDITOR BOUNDS {:?}", bounds);
         let editor = self.editor.clone();
         // cx.observe_keystrokes(move |ev, cx| {
         //     use helix_view::input::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -422,9 +423,9 @@ impl Element for DocumentView {
                 let total_lines = text.len_lines();
                 let first_row = text.char_to_line(anchor.min(text.len_chars()));
                 // println!("first row is {}", row);
-                let last_row = (first_row + after_layout.rows).min(total_lines);
+                let last_row = (first_row + after_layout.rows + 1).min(total_lines);
                 // println!("last row is {}", last_row);
-                let end_char = text.line_to_char(std::cmp::min(last_row + 1, total_lines));
+                let end_char = text.line_to_char(std::cmp::min(last_row, total_lines));
 
                 let text_view = text.slice(anchor..end_char);
                 let str: SharedString = RopeWrapper(text_view).into();
@@ -562,7 +563,7 @@ impl Element for DocumentView {
                             &mut self,
                             x: u16,
                             y: u16,
-                            width: usize,
+                            _width: usize,
                             style: helix_view::graphics::Style,
                             text: Option<&str>,
                         ) {

@@ -12,6 +12,7 @@ use gpui::{
 
 mod application;
 mod document;
+mod statusline;
 mod utils;
 mod workspace;
 
