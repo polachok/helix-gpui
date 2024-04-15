@@ -369,6 +369,41 @@ impl Element for DocumentView {
                 cx.focus(&focus);
             });
 
+        let lh = after_layout.line_height;
+        let editor = self.editor.clone();
+        let view_id = self.view_id;
+        self.interactivity.on_scroll_wheel(move |ev, cx| {
+            use helix_core::movement::Direction;
+            // println!("SCROLL WHEEL {:?}", ev);
+            let delta = ev.delta.pixel_delta(lh);
+            if delta.y != px(0.) {
+                let lines = delta.y / lh;
+                let direction = if lines > 0. {
+                    Direction::Backward
+                } else {
+                    Direction::Forward
+                };
+                let line_count = 1 + lines.abs() as usize;
+
+                // println!("{:?}", line_count);
+                editor.update(cx, |editor, cx| {
+                    let mut ctx = helix_term::commands::Context {
+                        editor,
+                        register: None,
+                        count: None,
+                        callback: Vec::new(),
+                        on_next_key_callback: None,
+                        jobs: &mut helix_term::job::Jobs::new(),
+                    };
+                    helix_term::commands::scroll(&mut ctx, line_count, direction, false);
+
+                    editor.ensure_cursor_in_view(view_id);
+                    cx.notify();
+                    cx.emit(crate::Update);
+                });
+            }
+        });
+
         let is_focused = self.is_focused;
         self.interactivity
             .paint(bounds, after_layout.hitbox.as_ref(), cx, |_, cx| {
