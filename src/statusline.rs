@@ -106,6 +106,7 @@ impl RenderOnce for StatusLine {
             .bg(base_bg)
             .justify_between()
             .content_stretch()
+            .text_size(self.style.font_size)
             .child(
                 div()
                     .w_full()
