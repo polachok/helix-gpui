@@ -1,6 +1,6 @@
 use crate::utils::color_to_hsla;
 use gpui::*;
-use helix_view::{graphics::CursorKind, Document, DocumentId, Editor, Theme, View, ViewId};
+use helix_view::{DocumentId, Editor, ViewId};
 
 #[derive(IntoElement)]
 pub struct StatusLine {
@@ -65,7 +65,6 @@ impl StatusLine {
         };
 
         let parts = render_status_parts(&mut ctx);
-        println!("{:?}", parts);
 
         let styled = |spans: Vec<tui::text::Span<'_>>| {
             let mut text = String::new();
@@ -149,16 +148,6 @@ mod copy_pasta {
         pub focused: bool,
     }
 
-    // pub fn render(context: &mut RenderContext, width: u16) -> Spans {
-    //     let base_style = if context.focused {
-    //         context.editor.theme.get("ui.statusline")
-    //     } else {
-    //         context.editor.theme.get("ui.statusline.inactive")
-    //     };
-
-    //     render_statusline(context, ewport.width as usize);
-    // }
-
     #[derive(Debug)]
     pub struct StatusLineElements<'a> {
         pub left: Vec<Span<'a>>,
@@ -194,76 +183,6 @@ mod copy_pasta {
             right,
             center,
         }
-    }
-
-    pub fn render_statusline<'a>(context: &mut RenderContext, width: usize) -> Spans<'a> {
-        let config = context.editor.config();
-
-        let element_ids = &config.statusline.left;
-        let mut left = element_ids
-            .iter()
-            .map(|element_id| get_render_function(*element_id))
-            .flat_map(|render| render(context).0)
-            .collect::<Vec<Span>>();
-
-        let element_ids = &config.statusline.center;
-        let mut center = element_ids
-            .iter()
-            .map(|element_id| get_render_function(*element_id))
-            .flat_map(|render| render(context).0)
-            .collect::<Vec<Span>>();
-
-        let element_ids = &config.statusline.right;
-        let mut right = element_ids
-            .iter()
-            .map(|element_id| get_render_function(*element_id))
-            .flat_map(|render| render(context).0)
-            .collect::<Vec<Span>>();
-
-        let left_area_width: usize = left.iter().map(|s| s.width()).sum();
-        let center_area_width: usize = center.iter().map(|s| s.width()).sum();
-        let right_area_width: usize = right.iter().map(|s| s.width()).sum();
-
-        let min_spacing_between_areas = 1usize;
-        let sides_space_required = left_area_width + right_area_width + min_spacing_between_areas;
-        let total_space_required =
-            sides_space_required + center_area_width + min_spacing_between_areas;
-
-        let mut statusline: Vec<Span> = vec![];
-
-        if center_area_width > 0 && total_space_required <= width {
-            // SAFETY: this subtraction cannot underflow because `left_area_width + center_area_width + right_area_width`
-            // is smaller than `total_space_required`, which is smaller than `width` in this branch.
-            let total_spacers = width - (left_area_width + center_area_width + right_area_width);
-            // This is how much padding space it would take on either side to align the center area to the middle.
-            let center_margin = (width - center_area_width) / 2;
-            let left_spacers =
-                if left_area_width < center_margin && right_area_width < center_margin {
-                    // Align the center area to the middle if there is enough space on both sides.
-                    center_margin - left_area_width
-                } else {
-                    // Otherwise split the available space evenly and use it as margin.
-                    // The center element won't be aligned to the middle but it will be evenly
-                    // spaced between the left and right areas.
-                    total_spacers / 2
-                };
-            let right_spacers = total_spacers - left_spacers;
-
-            statusline.append(&mut left);
-            statusline.push(" ".repeat(left_spacers).into());
-            statusline.append(&mut center);
-            statusline.push(" ".repeat(right_spacers).into());
-            statusline.append(&mut right);
-        } else if right_area_width > 0 && sides_space_required <= width {
-            let side_areas_width = left_area_width + right_area_width;
-            statusline.append(&mut left);
-            statusline.push(" ".repeat(width - side_areas_width).into());
-            statusline.append(&mut right);
-        } else if left_area_width <= width {
-            statusline.append(&mut left);
-        }
-
-        statusline.into()
     }
 
     fn get_render_function<'a>(

@@ -8,8 +8,23 @@ use helix_core::{
 };
 use helix_term::keymap::Keymaps;
 use helix_view::{graphics::CursorKind, Document, DocumentId, Editor, Theme, View, ViewId};
+use log::{debug, info};
 
 use crate::utils::{color_to_hsla, translate_key};
+
+struct Prompt {}
+
+impl Render for Prompt {
+    fn render(&mut self, _cx: &mut ViewContext<Self>) -> impl IntoElement {
+        debug!("RENDERING prompt");
+        anchored()
+            .position(Point {
+                x: px(100.),
+                y: px(100.),
+            })
+            .child(div().bg(hsla(1., 1., 1., 1.)).child("hello world:"))
+    }
+}
 
 pub struct DocumentView {
     editor: Model<Editor>,
@@ -72,13 +87,20 @@ impl DocumentView {
             if phase != DispatchPhase::Bubble {
                 return;
             }
-            println!("KEY EVENT {:?} @ {:?}", ev, phase);
+            debug!("KEY EVENT {:?} @ {:?}", ev, phase);
             let key = translate_key(&ev.keystroke);
 
-            println!("KEY EVENT {:?}", key);
+            debug!("KEY EVENT {:?}", key);
             let res = keymaps.update(cx, |keymaps, _cx| keymaps.get(mode, key));
-            println!("res {:?}", res);
+            debug!("res {:?}", res);
             let res = editor.update(cx, |editor, cx| {
+                let compositor_rect = helix_view::graphics::Rect {
+                    x: 0,
+                    y: 0,
+                    width: 80,
+                    height: 24,
+                };
+                let mut compositor = helix_term::compositor::Compositor::new(compositor_rect);
                 let _guard = rt_handle.enter();
                 let mut ctx = helix_term::commands::Context {
                     editor,
@@ -89,13 +111,39 @@ impl DocumentView {
                     jobs: &mut helix_term::job::Jobs::new(),
                 };
                 let res = handle_key_result(mode, &mut ctx, res);
+                debug!("CALLBACKS {:?}", ctx.callback.len());
+                let callbacks = ctx.callback;
+                if callbacks.len() != 0 {
+                    let mut comp_ctx = helix_term::compositor::Context {
+                        editor,
+                        scroll: None,
+                        jobs: &mut helix_term::job::Jobs::new(),
+                    };
+                    for cb in callbacks {
+                        cb(&mut compositor, &mut comp_ctx);
+                    }
+                    let mut buf = tui::buffer::Buffer::empty(compositor_rect);
+                    compositor.render(compositor_rect, &mut buf, &mut comp_ctx);
+                    let mut lines = Vec::new();
+                    for y in 0..compositor_rect.height {
+                        let mut line = String::new();
+                        for x in 0..compositor_rect.width {
+                            let cell = &buf[(x, y)];
+                            line.push_str(&cell.symbol);
+                        }
+                        lines.push(line);
+                    }
+                    debug!("{:?}", lines);
+                }
+
                 editor.ensure_cursor_in_view(view_id);
                 cx.notify();
                 drop(_guard);
-                cx.emit(crate::Update);
+                cx.emit(crate::Update::Redraw);
                 res
             });
-            println!("res {:?}", res);
+            debug!("res {:?}", res);
+            // let view = cx.new_view(|_| Prompt {});
         });
     }
 
@@ -214,31 +262,10 @@ impl DocumentView {
                 if let Some(style) =
                     gutter(pos.doc_line, selected, pos.first_visual_line, &mut text)
                 {
-                    // println!(
-                    //     "{:?} {:?} `{text}``",
-                    //     gutter_type,
-                    //     gutter_style.patch(style)
-                    // );
                     renderer.render(x, y, width, gutter_style.patch(style), Some(&text));
                 } else {
                     renderer.render(x, y, width, gutter_style, None);
-                    // println!("{:?} {:?} `{text}` `{width}`", gutter_type, gutter_style);
                 }
-                // {
-                //     renderer
-                //         .surface
-                //         .set_stringn(x, y, &text, width, gutter_style.patch(style));
-                // } else {
-                //     renderer.surface.set_style(
-                //         Rect {
-                //             x,
-                //             y,
-                //             width: width as u16,
-                //             height: 1,
-                //         },
-                //         gutter_style,
-                //     );
-                // }
                 text.clear();
             };
             gutters.push(Box::new(gutter_decoration));
@@ -257,6 +284,7 @@ impl InteractiveElement for DocumentView {
 impl StatefulInteractiveElement for DocumentView {}
 
 #[derive(Debug)]
+#[allow(unused)]
 pub struct DocumentLayout {
     rows: usize,
     columns: usize,
@@ -294,7 +322,7 @@ impl Element for DocumentView {
         _before_layout: &mut Self::BeforeLayout,
         cx: &mut ElementContext,
     ) -> Self::AfterLayout {
-        println!("EDITOR BOUNDS {:?}", bounds);
+        debug!("editor bounds {:?}", bounds);
         let editor = self.editor.clone();
         // cx.observe_keystrokes(move |ev, cx| {
         //     use helix_view::input::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -361,7 +389,6 @@ impl Element for DocumentView {
         after_layout: &mut Self::AfterLayout,
         cx: &mut ElementContext,
     ) {
-        // println!("{:?} {:?} {:?}", self.doc_id, after_layout, bounds);
         let focus = self.focus.clone();
         self.interactivity
             .on_mouse_down(MouseButton::Left, move |_ev, cx| {
@@ -374,7 +401,7 @@ impl Element for DocumentView {
         let view_id = self.view_id;
         self.interactivity.on_scroll_wheel(move |ev, cx| {
             use helix_core::movement::Direction;
-            // println!("SCROLL WHEEL {:?}", ev);
+            // debug!("SCROLL WHEEL {:?}", ev);
             let delta = ev.delta.pixel_delta(lh);
             if delta.y != px(0.) {
                 let lines = delta.y / lh;
@@ -399,7 +426,7 @@ impl Element for DocumentView {
 
                     editor.ensure_cursor_in_view(view_id);
                     cx.notify();
-                    cx.emit(crate::Update);
+                    cx.emit(crate::Update::Redraw);
                 });
             }
         });
@@ -433,7 +460,7 @@ impl Element for DocumentView {
                 let border_color = color_to_hsla(window_style.fg.unwrap());
                 let cursor_style = theme.get("ui.cursor.primary");
                 let bg = fill(bounds, bg_color);
-                let borders = outline(bounds, border_color);
+                let _borders = outline(bounds, border_color);
                 let fg_color = color_to_hsla(
                     default_style
                         .fg
@@ -445,14 +472,14 @@ impl Element for DocumentView {
                 let gutter_width = view.gutter_offset(document);
                 let gutter_overflow = gutter_width == 0;
                 if !gutter_overflow {
-                    println!("need to render gutter {}", gutter_width);
+                    debug!("need to render gutter {}", gutter_width);
                 }
 
                 let text = document.text();
 
                 let cursor_text = None; // TODO
 
-                let cursor_row = cursor_pos.map(|p| p.row);
+                let _cursor_row = cursor_pos.map(|p| p.row);
                 // println!("ROW: {:?}", cursor_row);
                 let anchor = view.offset.anchor;
                 let total_lines = text.len_lines();
@@ -482,7 +509,7 @@ impl Element for DocumentView {
 
                     if let Some(prev) = previous_region {
                         if prev.start == start && prev.end == end {
-                            println!(
+                            info!(
                                 "replacing previous region {:?} with new region {:?}",
                                 reg, prev
                             );

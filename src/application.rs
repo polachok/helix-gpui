@@ -1,28 +1,12 @@
 use arc_swap::{access::Map, ArcSwap};
 use std::{path::Path, sync::Arc};
 
-use helix_core::{diagnostic::Severity, pos_at_coords, syntax, Position, Selection};
+use helix_core::{pos_at_coords, syntax, Position, Selection};
 
-use helix_term::{
-    args::Args,
-    config::Config,
-    //handlers,
-    job::Jobs,
-    keymap::Keymaps,
-    ui::{self, overlay::overlaid},
-};
-use helix_view::{
-    align_view, doc_mut,
-    document::DocumentSavedEventResult,
-    editor::{ConfigEvent, EditorEvent},
-    graphics::Rect,
-    handlers::Handlers,
-    theme,
-    tree::Layout,
-    Align, Editor,
-};
+use helix_term::{args::Args, config::Config, keymap::Keymaps};
+use helix_view::{doc_mut, graphics::Rect, handlers::Handlers, theme, Editor};
 
-use anyhow::{Context as _, Error};
+use anyhow::Error;
 
 pub struct Application {
     pub editor: Editor,
@@ -65,8 +49,8 @@ pub fn init_editor(
         width: 80,
         height: 25,
     };
-    let (tx, rx) = tokio::sync::mpsc::channel(1);
-    let (tx1, rx1) = tokio::sync::mpsc::channel(1);
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+    let (tx1, _rx1) = tokio::sync::mpsc::channel(1);
     let handlers = Handlers {
         completions: tx,
         signature_hints: tx1,

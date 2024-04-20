@@ -4,10 +4,11 @@ use helix_loader::VERSION_AND_GIT_HASH;
 use helix_term::args::Args;
 use helix_term::config::{Config, ConfigLoadError};
 use helix_view::Editor;
+use log::debug;
 
 use gpui::{
-    actions, App, AppContext, Context as _, Menu, MenuItem, ModelContext as _, TitlebarOptions,
-    VisualContext as _, WindowBackgroundAppearance, WindowKind, WindowOptions,
+    actions, App, AppContext, Context as _, Menu, MenuItem, TitlebarOptions, VisualContext as _,
+    WindowBackgroundAppearance, WindowKind, WindowOptions,
 };
 
 mod application;
@@ -74,7 +75,7 @@ fn window_options(_cx: &mut AppContext) -> gpui::WindowOptions {
     }
 }
 
-actions!(workspace, [About, Quit, OpenFile]);
+actions!(workspace, [About, Quit, OpenFile, ShowModal]);
 
 fn app_menus() -> Vec<Menu<'static>> {
     vec![
@@ -101,7 +102,9 @@ fn app_menus() -> Vec<Menu<'static>> {
     ]
 }
 
-pub struct Update;
+pub enum Update {
+    Redraw,
+}
 
 impl gpui::EventEmitter<Update> for Editor {}
 
@@ -118,7 +121,7 @@ fn gui_main(editor: Editor, keymaps: helix_term::keymap::Keymaps, handle: tokio:
 
             cx.new_view(|cx| {
                 cx.subscribe(&editor, |_, _, _, cx| {
-                    println!("editor updated");
+                    debug!("editor updated");
                     cx.notify()
                 })
                 .detach();
@@ -252,8 +255,4 @@ FLAGS:
         .context("unable to create new application")?;
 
     Ok(Some(app))
-
-    // let exit_code = app.run().await?;
-
-    // Ok(exit_code)
 }

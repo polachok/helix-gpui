@@ -1,6 +1,7 @@
 use gpui::*;
 use helix_term::keymap::Keymaps;
 use helix_view::Editor;
+use log::debug;
 
 use crate::document::DocumentView;
 use crate::statusline::StatusLine;
@@ -96,7 +97,7 @@ impl Render for Workspace {
             .items_center()
             .child(label);
 
-        eprintln!("rendering workspace");
+        debug!("rendering workspace");
 
         div()
             .on_action(move |&crate::About, _cx| {
@@ -143,14 +144,15 @@ fn open(editor: Model<Editor>, handle: tokio::runtime::Handle, cx: &mut WindowCo
     cx.spawn(move |mut cx| async move {
         if let Ok(Some(path)) = path.await {
             use helix_view::editor::Action;
+            // TODO: handle errors
             cx.update(move |cx| {
-                editor.update(cx, move |editor, cx| {
+                editor.update(cx, move |editor, _cx| {
                     let path = &path[0];
-                    println!("PATH IS {}", path.display());
                     let _guard = handle.enter();
-                    editor.open(path, Action::Replace);
+                    editor.open(path, Action::Replace).unwrap();
                 })
-            });
+            })
+            .unwrap();
         }
     })
     .detach();
