@@ -1,22 +1,66 @@
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use helix_term::keymap::Keymaps;
 use helix_view::Editor;
-use log::debug;
+use log::{debug, info};
 
 use crate::document::DocumentView;
+use crate::info_box::InfoBox;
+use crate::prompt::Prompt;
 use crate::statusline::StatusLine;
 
 pub struct Workspace {
-    pub editor: Model<Editor>,
-    pub keymaps: Model<Keymaps>,
-    pub handle: tokio::runtime::Handle,
+    editor: Model<Editor>,
+    keymaps: Model<Keymaps>,
+    handle: tokio::runtime::Handle,
+    prompt: Option<Prompt>,
+    info: Option<InfoBox>,
 }
 
-// impl Workspace {
-//     fn open_file(&mut self, action: &OpenFile, cx: &mut ViewContext<Self>) {
-//         eprintln!("OPEN FILE");
-//     }
-// }
+impl Workspace {
+    pub fn new(
+        editor: Model<Editor>,
+        keymaps: Model<Keymaps>,
+        handle: tokio::runtime::Handle,
+    ) -> Self {
+        Self {
+            editor,
+            keymaps,
+            handle,
+            prompt: None,
+            info: None,
+        }
+    }
+
+    pub fn handle_event(&mut self, ev: &crate::Update, cx: &mut ViewContext<Self>) {
+        info!("handling editor event {:?}", ev);
+        match ev {
+            crate::Update::Redraw => {}
+            crate::Update::Prompt(prompt) => {
+                self.prompt = Some(prompt.clone());
+            }
+            crate::Update::Info(info) => {
+                info!("INFO {:?}", info);
+                let editor = self.editor.read(cx);
+                let text_style = editor.theme.get("ui.text.info");
+                let popup_style = editor.theme.get("ui.popup.info");
+                let fg = text_style
+                    .fg
+                    .and_then(crate::utils::color_to_hsla)
+                    .unwrap_or(white());
+                let bg = popup_style
+                    .bg
+                    .and_then(crate::utils::color_to_hsla)
+                    .unwrap_or(black());
+                let mut style = Style::default();
+                style.text.color = Some(fg);
+                style.background = Some(bg.into());
+
+                self.info = Some(InfoBox::new(info, style));
+            }
+        }
+    }
+}
 
 impl Render for Workspace {
     fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
@@ -24,8 +68,9 @@ impl Render for Workspace {
         let editor = self.editor.read(cx);
         let default_style = editor.theme.get("ui.background");
         let default_ui_text = editor.theme.get("ui.text");
-        let bg_color = crate::utils::color_to_hsla(default_style.bg.unwrap());
-        let text_color = crate::utils::color_to_hsla(default_ui_text.fg.unwrap());
+        let bg_color = crate::utils::color_to_hsla(default_style.bg.unwrap()).unwrap_or(black());
+        let text_color =
+            crate::utils::color_to_hsla(default_ui_text.fg.unwrap()).unwrap_or(white());
 
         let mut docs = vec![];
         let mut focused_file_name = None;
@@ -55,11 +100,6 @@ impl Render for Workspace {
                 is_focused,
                 self.handle.clone(),
             );
-            // let style = TextStyle {
-            //     font_family: "SF Pro".into(),
-            //     font_size: px(12.).into(),
-            //     ..Default::default()
-            // };
             let status = StatusLine::new(
                 self.editor.clone(),
                 doc_id,
@@ -99,6 +139,17 @@ impl Render for Workspace {
 
         debug!("rendering workspace");
 
+        let prompt = div().absolute().size_full().top_0().left_0().child(
+            div()
+                .top_20()
+                .flex()
+                .flex_col()
+                .items_center()
+                .when(self.prompt.is_some(), |this| {
+                    this.child(self.prompt.as_ref().unwrap().clone())
+                }),
+        );
+
         div()
             .on_action(move |&crate::About, _cx| {
                 eprintln!("hello");
@@ -119,7 +170,7 @@ impl Render for Workspace {
                 let editor = self.editor.clone();
 
                 move |&crate::OpenFile, cx| {
-                    println!("open file");
+                    info!("open file");
                     open(editor.clone(), handle.clone(), cx)
                 }
             })
@@ -132,6 +183,10 @@ impl Render for Workspace {
             .focusable()
             .child(top_bar)
             .children(docs)
+            .when(self.prompt.is_some(), move |this| this.child(prompt))
+            .when(self.info.is_some(), move |this| {
+                this.child(self.info.take().unwrap())
+            })
     }
 }
 

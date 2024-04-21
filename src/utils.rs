@@ -1,16 +1,23 @@
 use gpui::{hsla, rgb, Hsla, Keystroke};
 
-pub fn color_to_hsla(color: helix_view::graphics::Color) -> Hsla {
+pub fn color_to_hsla(color: helix_view::graphics::Color) -> Option<Hsla> {
+    use gpui::{black, blue, green, red, white, yellow};
     use helix_view::graphics::Color;
     match color {
-        Color::White => hsla(0., 0., 1., 1.),
+        Color::White => Some(white()),
+        Color::Black => Some(black()),
+        Color::Blue => Some(blue()),
+        Color::Green => Some(green()),
+        Color::Red => Some(red()),
+        Color::Yellow => Some(yellow()),
         Color::Rgb(r, g, b) => {
             let r = (r as u32) << 16;
             let g = (g as u32) << 8;
             let b = b as u32;
-            rgb(r | g | b).into()
+            Some(rgb(r | g | b).into())
         }
-        _ => todo!(),
+        Color::Reset => None,
+        any => todo!("{:?} not implemented", any),
     }
 }
 
@@ -36,13 +43,14 @@ pub fn translate_key(ks: &Keystroke) -> helix_view::input::KeyEvent {
         "down" => KeyCode::Down,
         "tab" => KeyCode::Tab,
         "escape" => KeyCode::Esc,
+        "space" => KeyCode::Char(' '),
         /* TODO */
-        _ => {
+        any => {
             let chars: Vec<char> = ks.key.clone().chars().collect();
             if chars.len() == 1 {
                 KeyCode::Char(chars[0])
             } else {
-                todo!()
+                todo!("{:?} key not implemented yet", any)
             }
         }
     };

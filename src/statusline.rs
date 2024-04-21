@@ -37,11 +37,11 @@ impl StatusLine {
         };
         let base_fg = base_style
             .fg
-            .map(color_to_hsla)
+            .and_then(color_to_hsla)
             .unwrap_or(hsla(0.5, 0.5, 0.5, 1.));
         let base_bg = base_style
             .bg
-            .map(color_to_hsla)
+            .and_then(color_to_hsla)
             .unwrap_or(hsla(0.5, 0.5, 0.5, 1.));
         (base_fg, base_bg)
     }
@@ -73,8 +73,8 @@ impl StatusLine {
             for span in spans {
                 let len = span.content.len();
                 text.push_str(&span.content);
-                let fg = span.style.fg.map(color_to_hsla).unwrap_or(base_fg);
-                let bg = span.style.bg.map(color_to_hsla).unwrap_or(base_bg);
+                let fg = span.style.fg.and_then(color_to_hsla).unwrap_or(base_fg);
+                let bg = span.style.bg.and_then(color_to_hsla).unwrap_or(base_bg);
                 let mut run = HighlightStyle::default();
                 run.color = Some(fg);
                 run.background_color = Some(bg);

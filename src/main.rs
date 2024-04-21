@@ -4,7 +4,6 @@ use helix_loader::VERSION_AND_GIT_HASH;
 use helix_term::args::Args;
 use helix_term::config::{Config, ConfigLoadError};
 use helix_view::Editor;
-use log::debug;
 
 use gpui::{
     actions, App, AppContext, Context as _, Menu, MenuItem, TitlebarOptions, VisualContext as _,
@@ -13,6 +12,8 @@ use gpui::{
 
 mod application;
 mod document;
+mod info_box;
+mod prompt;
 mod statusline;
 mod utils;
 mod workspace;
@@ -38,6 +39,7 @@ fn setup_logging(verbosity: u64) -> Result<()> {
                 message
             ))
         })
+        .chain(std::io::stdout())
         .chain(fern::log_file(helix_loader::log_file())?);
 
     base_config.chain(file_config).apply()?;
@@ -102,8 +104,11 @@ fn app_menus() -> Vec<Menu<'static>> {
     ]
 }
 
+#[derive(Debug)]
 pub enum Update {
     Redraw,
+    Prompt(prompt::Prompt),
+    Info(helix_view::info::Info),
 }
 
 impl gpui::EventEmitter<Update> for Editor {}
@@ -120,16 +125,12 @@ fn gui_main(editor: Editor, keymaps: helix_term::keymap::Keymaps, handle: tokio:
             cx.set_menus(app_menus());
 
             cx.new_view(|cx| {
-                cx.subscribe(&editor, |_, _, _, cx| {
-                    debug!("editor updated");
+                cx.subscribe(&editor, |w: &mut workspace::Workspace, _, ev, cx| {
+                    w.handle_event(ev, cx);
                     cx.notify()
                 })
                 .detach();
-                workspace::Workspace {
-                    editor,
-                    keymaps,
-                    handle,
-                }
+                workspace::Workspace::new(editor, keymaps, handle)
             })
         });
     })

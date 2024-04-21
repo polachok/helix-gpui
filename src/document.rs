@@ -10,21 +10,8 @@ use helix_term::keymap::Keymaps;
 use helix_view::{graphics::CursorKind, Document, DocumentId, Editor, Theme, View, ViewId};
 use log::{debug, info};
 
+use crate::prompt::Prompt;
 use crate::utils::{color_to_hsla, translate_key};
-
-struct Prompt {}
-
-impl Render for Prompt {
-    fn render(&mut self, _cx: &mut ViewContext<Self>) -> impl IntoElement {
-        debug!("RENDERING prompt");
-        anchored()
-            .position(Point {
-                x: px(100.),
-                y: px(100.),
-            })
-            .child(div().bg(hsla(1., 1., 1., 1.)).child("hello world:"))
-    }
-}
 
 pub struct DocumentView {
     editor: Model<Editor>,
@@ -97,7 +84,7 @@ impl DocumentView {
                 let compositor_rect = helix_view::graphics::Rect {
                     x: 0,
                     y: 0,
-                    width: 80,
+                    width: 30,
                     height: 24,
                 };
                 let mut compositor = helix_term::compositor::Compositor::new(compositor_rect);
@@ -111,9 +98,12 @@ impl DocumentView {
                     jobs: &mut helix_term::job::Jobs::new(),
                 };
                 let res = handle_key_result(mode, &mut ctx, res);
+                if let Some(info) = ctx.editor.autoinfo.take() {
+                    cx.emit(crate::Update::Info(info));
+                }
                 debug!("CALLBACKS {:?}", ctx.callback.len());
                 let callbacks = ctx.callback;
-                if callbacks.len() != 0 {
+                let prompt = if callbacks.len() != 0 {
                     let mut comp_ctx = helix_term::compositor::Context {
                         editor,
                         scroll: None,
@@ -124,26 +114,71 @@ impl DocumentView {
                     }
                     let mut buf = tui::buffer::Buffer::empty(compositor_rect);
                     compositor.render(compositor_rect, &mut buf, &mut comp_ctx);
-                    let mut lines = Vec::new();
+                    let mut highlights: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
+
+                    let mut text = String::new();
                     for y in 0..compositor_rect.height {
                         let mut line = String::new();
                         for x in 0..compositor_rect.width {
                             let cell = &buf[(x, y)];
+                            let bg = crate::utils::color_to_hsla(cell.bg);
+                            let fg = crate::utils::color_to_hsla(cell.fg);
+                            let new_style = HighlightStyle {
+                                color: fg,
+                                background_color: bg,
+                                ..Default::default()
+                            };
+                            let new_range =
+                                if let Some((range, current_highlight)) = highlights.last_mut() {
+                                    if &new_style == current_highlight {
+                                        range.end += 1;
+                                        None
+                                    } else {
+                                        let range = range.end..range.end + 1;
+                                        Some(range)
+                                    }
+                                } else {
+                                    let range = 0..1;
+                                    Some(range)
+                                };
+                            if let Some(new_range) = new_range {
+                                highlights.push((new_range, new_style));
+                            }
                             line.push_str(&cell.symbol);
                         }
-                        lines.push(line);
+                        if line.chars().all(char::is_whitespace) {
+                            let mut hl_is_empty = false;
+                            if let Some(hl) = highlights.last_mut() {
+                                hl.0.end -= line.len();
+                                hl_is_empty = hl.0.end == hl.0.start;
+                            }
+                            if hl_is_empty {
+                                highlights.pop();
+                            }
+                            continue;
+                        } else {
+                            text.push_str(&line);
+                        }
+                        text.push_str("\n");
                     }
-                    debug!("{:?}", lines);
-                }
+                    Some(Prompt {
+                        text,
+                        styles: highlights,
+                    })
+                } else {
+                    None
+                };
 
                 editor.ensure_cursor_in_view(view_id);
                 cx.notify();
                 drop(_guard);
                 cx.emit(crate::Update::Redraw);
+                if let Some(prompt) = prompt {
+                    cx.emit(crate::Update::Prompt(prompt));
+                }
                 res
             });
             debug!("res {:?}", res);
-            // let view = cx.new_view(|_| Prompt {});
         });
     }
 
@@ -455,17 +490,18 @@ impl Element for DocumentView {
 
                 let theme = &editor.theme;
                 let default_style = theme.get("ui.background");
-                let bg_color = color_to_hsla(default_style.bg.unwrap());
+                let bg_color = color_to_hsla(default_style.bg.unwrap()).unwrap_or(black());
                 let window_style = theme.get("ui.window");
                 let border_color = color_to_hsla(window_style.fg.unwrap());
                 let cursor_style = theme.get("ui.cursor.primary");
                 let bg = fill(bounds, bg_color);
-                let _borders = outline(bounds, border_color);
+                // let _borders = outline(bounds, border_color);
                 let fg_color = color_to_hsla(
                     default_style
                         .fg
                         .unwrap_or(helix_view::graphics::Color::White),
-                );
+                )
+                .unwrap_or(white());
 
                 let document = editor.document(self.doc_id).unwrap();
 
@@ -538,7 +574,7 @@ impl Element for DocumentView {
                     }
 
                     let style = theme.highlight(hl.0);
-                    let fg = style.fg.map(|fg| color_to_hsla(fg));
+                    let fg = style.fg.and_then(|fg| color_to_hsla(fg));
                     //let bg = style.fg.map(|fg| color_to_hsla(fg));
                     let len = end - start;
                     let run = TextRun {
@@ -578,7 +614,7 @@ impl Element for DocumentView {
                         let origin_x = after_layout.cell_width * col as f32;
                         let mut cursor_fg = cursor_style
                             .bg
-                            .map(|fg| color_to_hsla(fg))
+                            .and_then(|fg| color_to_hsla(fg))
                             .unwrap_or(fg_color);
                         cursor_fg.a = 0.5;
 
@@ -632,8 +668,10 @@ impl Element for DocumentView {
                             // println!("RENDERING GUTTER {:?} with width {width} @ {x} {y}", text);
                             let origin_y = self.origin.y + self.after_layout.line_height * y as f32;
                             let origin_x = self.origin.x + self.after_layout.cell_width * x as f32;
-                            let fg_color =
-                                style.fg.map(color_to_hsla).unwrap_or(hsla(0., 0., 1., 1.));
+                            let fg_color = style
+                                .fg
+                                .and_then(color_to_hsla)
+                                .unwrap_or(hsla(0., 0., 1., 1.));
                             if let Some(text) = text {
                                 let run = TextRun {
                                     len: text.len(),
