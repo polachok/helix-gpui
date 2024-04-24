@@ -1,7 +1,7 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use helix_term::compositor::Compositor;
-use helix_term::keymap::Keymaps;
+use helix_term::ui::EditorView;
 use helix_view::Editor;
 use log::{debug, info};
 
@@ -12,7 +12,7 @@ use crate::statusline::StatusLine;
 
 pub struct Workspace {
     editor: Model<Editor>,
-    keymaps: Model<Keymaps>,
+    view: Model<EditorView>,
     compositor: Model<Compositor>,
     handle: tokio::runtime::Handle,
     prompt: Option<Prompt>,
@@ -22,13 +22,13 @@ pub struct Workspace {
 impl Workspace {
     pub fn new(
         editor: Model<Editor>,
-        keymaps: Model<Keymaps>,
+        view: Model<EditorView>,
         compositor: Model<Compositor>,
         handle: tokio::runtime::Handle,
     ) -> Self {
         Self {
             editor,
-            keymaps,
+            view,
             compositor,
             handle,
             prompt: None,
@@ -104,14 +104,11 @@ impl Render for Workspace {
 
             let doc_elem = DocumentView::new(
                 self.editor.clone(),
-                self.keymaps.clone(),
-                self.compositor.clone(),
                 doc_id,
                 view_id,
                 style.clone(),
                 &focus_handle,
                 is_focused,
-                self.handle.clone(),
             );
             let status = StatusLine::new(
                 self.editor.clone(),
@@ -154,7 +151,6 @@ impl Render for Workspace {
 
         if let Some(handle) = focused_doc {
             if !handle.is_focused(cx) {
-                println!("FOCUSING {:?}", handle);
                 handle.focus(cx);
             }
         }
@@ -185,10 +181,10 @@ impl Render for Workspace {
                 ),
         );
 
-        let keymaps = self.keymaps.clone();
         let editor = self.editor.clone();
         let compositor = self.compositor.clone();
         let rt_handle = self.handle.clone();
+        let view = self.view.clone();
 
         compositor.update(cx, move |compositor, _cx| {
             compositor.resize(editor_rect);
@@ -197,58 +193,52 @@ impl Render for Workspace {
         div()
             .on_key_down(move |ev, cx| {
                 println!("WORKSPACE KEY DOWN: {:?}", ev.keystroke);
-                let keymaps = keymaps.clone();
 
                 let key = crate::utils::translate_key(&ev.keystroke);
 
-                debug!("WORKSPACE KEY EVENT {:?}", key);
-
                 editor.update(cx, |editor, cx| {
                     let _guard = rt_handle.enter();
-                    let mode = editor.mode();
 
-                    let mut ctx = helix_term::commands::Context {
-                        editor,
-                        register: None,
-                        count: None,
-                        callback: Vec::new(),
-                        on_next_key_callback: None,
-                        jobs: &mut helix_term::job::Jobs::new(),
-                    };
-
-                    let is_handled = compositor.update(cx, |compositor, _cx| {
+                    compositor.update(cx, |compositor, cx| {
                         let mut comp_ctx = helix_term::compositor::Context {
-                            editor: ctx.editor,
+                            editor,
                             scroll: None,
                             jobs: &mut helix_term::job::Jobs::new(),
                         };
-                        let is_handled = compositor
+                        let mut is_handled = compositor
                             .handle_event(&helix_view::input::Event::Key(key), &mut comp_ctx);
-                        println!("is handled? {:?}", is_handled);
+                        debug!("is handled by comp? {:?}", is_handled);
 
-                        is_handled
+                        if !is_handled {
+                            is_handled = view.update(cx, |view, _cx| {
+                                use helix_term::compositor::{Component, EventResult};
+                                let event = &helix_view::input::Event::Key(key);
+                                let res = view.handle_event(event, &mut comp_ctx);
+                                let is_handled = matches!(res, EventResult::Consumed(_));
+                                if let EventResult::Consumed(Some(cb)) = res {
+                                    cb(compositor, &mut comp_ctx);
+                                }
+                                is_handled
+                            });
+                        }
+                        debug!("is handled? {:?}", is_handled);
                     });
 
-                    if !is_handled {
-                        let kmap = keymaps.update(cx, |keymaps, _cx| keymaps.get(mode, key));
-                        let res = crate::utils::handle_key_result(mode, &mut ctx, kmap);
-                        info!("key result: {:?}", res);
-                    }
-
-                    let prompt = if ctx.callback.len() != 0 || is_handled {
-                        let callbacks = ctx.callback;
+                    let prompt = {
                         let prompt = compositor.update(cx, |compositor, _cx| {
-                            Prompt::make(compositor, &mut ctx.editor, callbacks)
+                            if let Some(p) = compositor.find::<helix_term::ui::Prompt>() {
+                                Some(Prompt::make(editor, p))
+                            } else {
+                                None
+                            }
                         });
 
-                        if prompt.is_empty() {
-                            None
-                        } else {
-                            Some(prompt)
-                        }
-                    } else {
-                        None
+                        prompt
                     };
+
+                    if let Some(prompt) = prompt {
+                        cx.emit(crate::Update::Prompt(prompt));
+                    }
 
                     if let Some(info) = editor.autoinfo.take() {
                         cx.emit(crate::Update::Info(info));
@@ -258,9 +248,6 @@ impl Render for Workspace {
                         editor.ensure_cursor_in_view(view_id);
                     }
                     drop(_guard);
-                    if let Some(prompt) = prompt {
-                        cx.emit(crate::Update::Prompt(prompt));
-                    }
                     cx.notify();
                     cx.emit(crate::Update::Redraw);
                 });

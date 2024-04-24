@@ -1,15 +1,15 @@
 use anyhow::{Context, Error, Result};
-use application::Application;
 use helix_loader::VERSION_AND_GIT_HASH;
 use helix_term::args::Args;
 use helix_term::config::{Config, ConfigLoadError};
-use helix_term::{compositor::Compositor, keymap::Keymaps};
 use helix_view::Editor;
 
 use gpui::{
     actions, App, AppContext, Context as _, Menu, MenuItem, TitlebarOptions, VisualContext as _,
     WindowBackgroundAppearance, WindowKind, WindowOptions,
 };
+
+use application::Application;
 
 mod application;
 mod document;
@@ -53,11 +53,8 @@ fn main() -> Result<()> {
     let handle = rt.handle();
     let _guard = handle.enter();
     let app = init_editor().unwrap().unwrap();
-    let editor = app.editor;
-    let keymaps = app.keymaps;
-    let compositor = app.compositor;
     drop(_guard);
-    gui_main(editor, keymaps, compositor, handle.clone());
+    gui_main(app, handle.clone());
     Ok(())
 }
 
@@ -115,19 +112,14 @@ pub enum Update {
 
 impl gpui::EventEmitter<Update> for Editor {}
 
-fn gui_main(
-    editor: Editor,
-    keymaps: Keymaps,
-    compositor: Compositor,
-    handle: tokio::runtime::Handle,
-) {
+fn gui_main(app: Application, handle: tokio::runtime::Handle) {
     App::new().run(|cx: &mut AppContext| {
         let options = window_options(cx);
 
         cx.open_window(options, |cx| {
-            let editor = cx.new_model(|_mc| editor);
-            let keymaps = cx.new_model(|_mc| keymaps);
-            let compositor = cx.new_model(|_mc| compositor);
+            let editor = cx.new_model(|_mc| app.editor);
+            let view = cx.new_model(|_mc| app.view);
+            let compositor = cx.new_model(|_mc| app.compositor);
 
             cx.activate(true);
             cx.set_menus(app_menus());
@@ -138,7 +130,7 @@ fn gui_main(
                     cx.notify()
                 })
                 .detach();
-                workspace::Workspace::new(editor, keymaps, compositor, handle)
+                workspace::Workspace::new(editor, view, compositor, handle)
             })
         });
     })

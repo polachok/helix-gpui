@@ -6,50 +6,38 @@ use helix_core::{
     ropey::RopeSlice,
     syntax::{Highlight, HighlightEvent},
 };
-use helix_term::compositor::Compositor;
-use helix_term::keymap::Keymaps;
 use helix_view::{graphics::CursorKind, Document, DocumentId, Editor, Theme, View, ViewId};
 use log::{debug, info};
 
-use crate::prompt::Prompt;
-use crate::utils::{color_to_hsla, handle_key_result, translate_key};
+use crate::utils::color_to_hsla;
 
 pub struct DocumentView {
     editor: Model<Editor>,
-    keymaps: Model<Keymaps>,
-    compositor: Model<Compositor>,
     doc_id: DocumentId,
     view_id: ViewId,
     style: TextStyle,
     interactivity: Interactivity,
     focus: FocusHandle,
     is_focused: bool,
-    rt_handle: tokio::runtime::Handle,
 }
 
 impl DocumentView {
     pub fn new(
         editor: Model<Editor>,
-        keymaps: Model<Keymaps>,
-        compositor: Model<Compositor>,
         doc_id: DocumentId,
         view_id: ViewId,
         style: TextStyle,
         focus: &FocusHandle,
         is_focused: bool,
-        rt_handle: tokio::runtime::Handle,
     ) -> Self {
         Self {
             editor,
-            keymaps,
-            compositor,
             doc_id,
             view_id,
             style,
             interactivity: Interactivity::default(),
             focus: focus.clone(),
             is_focused,
-            rt_handle,
         }
         .track_focus(&focus)
         .element
@@ -354,7 +342,7 @@ impl Element for DocumentView {
                 let default_style = theme.get("ui.background");
                 let bg_color = color_to_hsla(default_style.bg.unwrap()).unwrap_or(black());
                 let window_style = theme.get("ui.window");
-                let border_color = color_to_hsla(window_style.fg.unwrap());
+                let _border_color = color_to_hsla(window_style.fg.unwrap());
                 let cursor_style = theme.get("ui.cursor.primary");
                 let bg = fill(bounds, bg_color);
                 // let _borders = outline(bounds, border_color);

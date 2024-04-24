@@ -3,15 +3,17 @@ use std::{path::Path, sync::Arc};
 
 use helix_core::{pos_at_coords, syntax, Position, Selection};
 
-use helix_term::{args::Args, compositor::Compositor, config::Config, keymap::Keymaps};
+use helix_term::{
+    args::Args, compositor::Compositor, config::Config, keymap::Keymaps, ui::EditorView,
+};
 use helix_view::{doc_mut, graphics::Rect, handlers::Handlers, theme, Editor};
 
 use anyhow::Error;
 
 pub struct Application {
     pub editor: Editor,
-    pub keymaps: Keymaps,
     pub compositor: Compositor,
+    pub view: EditorView,
 }
 
 pub fn init_editor(
@@ -89,17 +91,20 @@ pub fn init_editor(
     let keys = Box::new(Map::new(Arc::clone(&config), |config: &Config| {
         &config.keys
     }));
-    let keymaps = Keymaps::new(keys);
     let compositor = Compositor::new(Rect {
         x: 0,
         y: 0,
         width: 80,
         height: 25,
     });
+    let keymaps = Keymaps::new(keys);
+    let view = EditorView::new(keymaps);
+
+    helix_term::events::register();
 
     Ok(Application {
         editor,
-        keymaps,
         compositor,
+        view,
     })
 }

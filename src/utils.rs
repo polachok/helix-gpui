@@ -63,6 +63,7 @@ pub fn translate_key(ks: &Keystroke) -> helix_view::input::KeyEvent {
 /// if event was handled (a command was executed or a subkeymap was
 /// activated). Only KeymapResult::{NotFound, Cancelled} is returned
 /// otherwise.
+#[allow(unused)]
 pub fn handle_key_result(
     mode: helix_view::document::Mode,
     cxt: &mut helix_term::commands::Context,

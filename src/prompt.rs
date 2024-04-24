@@ -8,11 +8,7 @@ pub struct Prompt {
 }
 
 impl Prompt {
-    pub fn make(
-        compositor: &mut helix_term::compositor::Compositor,
-        editor: &mut helix_view::Editor,
-        callbacks: Vec<helix_term::compositor::Callback>,
-    ) -> Prompt {
+    pub fn make(editor: &mut helix_view::Editor, prompt: &helix_term::ui::Prompt) -> Prompt {
         let area = editor.tree.area();
         let compositor_rect = helix_view::graphics::Rect {
             x: 0,
@@ -26,11 +22,8 @@ impl Prompt {
             scroll: None,
             jobs: &mut helix_term::job::Jobs::new(),
         };
-        for cb in callbacks {
-            cb(compositor, &mut comp_ctx);
-        }
         let mut buf = tui::buffer::Buffer::empty(compositor_rect);
-        compositor.render(compositor_rect, &mut buf, &mut comp_ctx);
+        prompt.render_prompt(compositor_rect, &mut buf, &mut comp_ctx);
         let mut highlights: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
 
         let mut text = String::new();
