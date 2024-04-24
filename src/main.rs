@@ -3,6 +3,7 @@ use application::Application;
 use helix_loader::VERSION_AND_GIT_HASH;
 use helix_term::args::Args;
 use helix_term::config::{Config, ConfigLoadError};
+use helix_term::{compositor::Compositor, keymap::Keymaps};
 use helix_view::Editor;
 
 use gpui::{
@@ -54,8 +55,9 @@ fn main() -> Result<()> {
     let app = init_editor().unwrap().unwrap();
     let editor = app.editor;
     let keymaps = app.keymaps;
+    let compositor = app.compositor;
     drop(_guard);
-    gui_main(editor, keymaps, handle.clone());
+    gui_main(editor, keymaps, compositor, handle.clone());
     Ok(())
 }
 
@@ -113,13 +115,19 @@ pub enum Update {
 
 impl gpui::EventEmitter<Update> for Editor {}
 
-fn gui_main(editor: Editor, keymaps: helix_term::keymap::Keymaps, handle: tokio::runtime::Handle) {
+fn gui_main(
+    editor: Editor,
+    keymaps: Keymaps,
+    compositor: Compositor,
+    handle: tokio::runtime::Handle,
+) {
     App::new().run(|cx: &mut AppContext| {
         let options = window_options(cx);
 
         cx.open_window(options, |cx| {
             let editor = cx.new_model(|_mc| editor);
             let keymaps = cx.new_model(|_mc| keymaps);
+            let compositor = cx.new_model(|_mc| compositor);
 
             cx.activate(true);
             cx.set_menus(app_menus());
@@ -130,7 +138,7 @@ fn gui_main(editor: Editor, keymaps: helix_term::keymap::Keymaps, handle: tokio:
                     cx.notify()
                 })
                 .detach();
-                workspace::Workspace::new(editor, keymaps, handle)
+                workspace::Workspace::new(editor, keymaps, compositor, handle)
             })
         });
     })

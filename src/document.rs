@@ -6,16 +6,18 @@ use helix_core::{
     ropey::RopeSlice,
     syntax::{Highlight, HighlightEvent},
 };
+use helix_term::compositor::Compositor;
 use helix_term::keymap::Keymaps;
 use helix_view::{graphics::CursorKind, Document, DocumentId, Editor, Theme, View, ViewId};
 use log::{debug, info};
 
 use crate::prompt::Prompt;
-use crate::utils::{color_to_hsla, translate_key};
+use crate::utils::{color_to_hsla, handle_key_result, translate_key};
 
 pub struct DocumentView {
     editor: Model<Editor>,
     keymaps: Model<Keymaps>,
+    compositor: Model<Compositor>,
     doc_id: DocumentId,
     view_id: ViewId,
     style: TextStyle,
@@ -29,6 +31,7 @@ impl DocumentView {
     pub fn new(
         editor: Model<Editor>,
         keymaps: Model<Keymaps>,
+        compositor: Model<Compositor>,
         doc_id: DocumentId,
         view_id: ViewId,
         style: TextStyle,
@@ -39,6 +42,7 @@ impl DocumentView {
         Self {
             editor,
             keymaps,
+            compositor,
             doc_id,
             view_id,
             style,
@@ -49,137 +53,6 @@ impl DocumentView {
         }
         .track_focus(&focus)
         .element
-    }
-
-    fn install_key_handlers(
-        editor: Model<Editor>,
-        keymaps: Model<Keymaps>,
-        rt_handle: tokio::runtime::Handle,
-        view_id: ViewId,
-        cx: &mut ElementContext,
-    ) {
-        let mode = {
-            let editor = editor.read(cx);
-            editor.mode()
-        };
-
-        // self.interactivity
-        // .on_mouse_down(MouseButton::Left, move |ev, cx| {
-        //     println!("MOUSE DOWN");
-        //     cx.focus(&focus);
-        //     // TODO: change focus in editor
-        // });
-
-        cx.on_key_event::<KeyDownEvent>(move |ev, phase, cx| {
-            if phase != DispatchPhase::Bubble {
-                return;
-            }
-            debug!("KEY EVENT {:?} @ {:?}", ev, phase);
-            let key = translate_key(&ev.keystroke);
-
-            debug!("KEY EVENT {:?}", key);
-            let res = keymaps.update(cx, |keymaps, _cx| keymaps.get(mode, key));
-            debug!("res {:?}", res);
-            let res = editor.update(cx, |editor, cx| {
-                let compositor_rect = helix_view::graphics::Rect {
-                    x: 0,
-                    y: 0,
-                    width: 30,
-                    height: 24,
-                };
-                let mut compositor = helix_term::compositor::Compositor::new(compositor_rect);
-                let _guard = rt_handle.enter();
-                let mut ctx = helix_term::commands::Context {
-                    editor,
-                    register: None,
-                    count: None,
-                    callback: Vec::new(),
-                    on_next_key_callback: None,
-                    jobs: &mut helix_term::job::Jobs::new(),
-                };
-                let res = handle_key_result(mode, &mut ctx, res);
-                if let Some(info) = ctx.editor.autoinfo.take() {
-                    cx.emit(crate::Update::Info(info));
-                }
-                debug!("CALLBACKS {:?}", ctx.callback.len());
-                let callbacks = ctx.callback;
-                let prompt = if callbacks.len() != 0 {
-                    let mut comp_ctx = helix_term::compositor::Context {
-                        editor,
-                        scroll: None,
-                        jobs: &mut helix_term::job::Jobs::new(),
-                    };
-                    for cb in callbacks {
-                        cb(&mut compositor, &mut comp_ctx);
-                    }
-                    let mut buf = tui::buffer::Buffer::empty(compositor_rect);
-                    compositor.render(compositor_rect, &mut buf, &mut comp_ctx);
-                    let mut highlights: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
-
-                    let mut text = String::new();
-                    for y in 0..compositor_rect.height {
-                        let mut line = String::new();
-                        for x in 0..compositor_rect.width {
-                            let cell = &buf[(x, y)];
-                            let bg = crate::utils::color_to_hsla(cell.bg);
-                            let fg = crate::utils::color_to_hsla(cell.fg);
-                            let new_style = HighlightStyle {
-                                color: fg,
-                                background_color: bg,
-                                ..Default::default()
-                            };
-                            let new_range =
-                                if let Some((range, current_highlight)) = highlights.last_mut() {
-                                    if &new_style == current_highlight {
-                                        range.end += 1;
-                                        None
-                                    } else {
-                                        let range = range.end..range.end + 1;
-                                        Some(range)
-                                    }
-                                } else {
-                                    let range = 0..1;
-                                    Some(range)
-                                };
-                            if let Some(new_range) = new_range {
-                                highlights.push((new_range, new_style));
-                            }
-                            line.push_str(&cell.symbol);
-                        }
-                        if line.chars().all(char::is_whitespace) {
-                            let mut hl_is_empty = false;
-                            if let Some(hl) = highlights.last_mut() {
-                                hl.0.end -= line.len();
-                                hl_is_empty = hl.0.end == hl.0.start;
-                            }
-                            if hl_is_empty {
-                                highlights.pop();
-                            }
-                            continue;
-                        } else {
-                            text.push_str(&line);
-                        }
-                        text.push_str("\n");
-                    }
-                    Some(Prompt {
-                        text,
-                        styles: highlights,
-                    })
-                } else {
-                    None
-                };
-
-                editor.ensure_cursor_in_view(view_id);
-                cx.notify();
-                drop(_guard);
-                cx.emit(crate::Update::Redraw);
-                if let Some(prompt) = prompt {
-                    cx.emit(crate::Update::Prompt(prompt));
-                }
-                res
-            });
-            debug!("res {:?}", res);
-        });
     }
 
     fn viewport_byte_range(
@@ -469,17 +342,6 @@ impl Element for DocumentView {
         let is_focused = self.is_focused;
         self.interactivity
             .paint(bounds, after_layout.hitbox.as_ref(), cx, |_, cx| {
-                if is_focused {
-                    cx.focus(&self.focus);
-                }
-                let keymaps = self.keymaps.clone();
-                let editor = self.editor.clone();
-
-                let view_id = self.view_id;
-                let rt_handle = self.rt_handle.clone();
-
-                Self::install_key_handlers(editor, keymaps, rt_handle, view_id, cx);
-
                 let editor = self.editor.read(cx);
 
                 let view = editor.tree.get(self.view_id);
@@ -729,64 +591,6 @@ impl Element for DocumentView {
                 }
             });
     }
-}
-
-/// Handle events by looking them up in `self.keymaps`. Returns None
-/// if event was handled (a command was executed or a subkeymap was
-/// activated). Only KeymapResult::{NotFound, Cancelled} is returned
-/// otherwise.
-fn handle_key_result(
-    mode: helix_view::document::Mode,
-    cxt: &mut helix_term::commands::Context,
-    key_result: helix_term::keymap::KeymapResult,
-) -> Option<helix_term::keymap::KeymapResult> {
-    use helix_term::events::{OnModeSwitch, PostCommand};
-    use helix_term::keymap::KeymapResult;
-    use helix_view::document::Mode;
-
-    let mut last_mode = mode;
-    //self.pseudo_pending.extend(self.keymaps.pending());
-    //let key_result = keymaps.get(mode, event);
-    //cxt.editor.autoinfo = keymaps.sticky().map(|node| node.infobox());
-
-    let mut execute_command = |command: &helix_term::commands::MappableCommand| {
-        command.execute(cxt);
-        helix_event::dispatch(PostCommand { command, cx: cxt });
-
-        let current_mode = cxt.editor.mode();
-        if current_mode != last_mode {
-            helix_event::dispatch(OnModeSwitch {
-                old_mode: last_mode,
-                new_mode: current_mode,
-                cx: cxt,
-            });
-
-            // HAXX: if we just entered insert mode from normal, clear key buf
-            // and record the command that got us into this mode.
-            if current_mode == Mode::Insert {
-                // how we entered insert mode is important, and we should track that so
-                // we can repeat the side effect.
-                //self.last_insert.0 = command.clone();
-                //self.last_insert.1.clear();
-            }
-        }
-
-        last_mode = current_mode;
-    };
-
-    match &key_result {
-        KeymapResult::Matched(command) => {
-            execute_command(command);
-        }
-        KeymapResult::Pending(node) => cxt.editor.autoinfo = Some(node.infobox()),
-        KeymapResult::MatchedSequence(commands) => {
-            for command in commands {
-                execute_command(command);
-            }
-        }
-        KeymapResult::NotFound | KeymapResult::Cancelled(_) => return Some(key_result),
-    }
-    None
 }
 
 struct Cursor {

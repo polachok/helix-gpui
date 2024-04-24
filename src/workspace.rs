@@ -1,17 +1,19 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use helix_term::compositor::Compositor;
 use helix_term::keymap::Keymaps;
 use helix_view::Editor;
 use log::{debug, info};
 
 use crate::document::DocumentView;
 use crate::info_box::InfoBox;
-use crate::prompt::Prompt;
+use crate::prompt::{Prompt, PromptElement};
 use crate::statusline::StatusLine;
 
 pub struct Workspace {
     editor: Model<Editor>,
     keymaps: Model<Keymaps>,
+    compositor: Model<Compositor>,
     handle: tokio::runtime::Handle,
     prompt: Option<Prompt>,
     info: Option<InfoBox>,
@@ -21,11 +23,13 @@ impl Workspace {
     pub fn new(
         editor: Model<Editor>,
         keymaps: Model<Keymaps>,
+        compositor: Model<Compositor>,
         handle: tokio::runtime::Handle,
     ) -> Self {
         Self {
             editor,
             keymaps,
+            compositor,
             handle,
             prompt: None,
             info: None,
@@ -74,14 +78,22 @@ impl Render for Workspace {
 
         let mut docs = vec![];
         let mut focused_file_name = None;
+        let mut focused_doc = None;
+
+        let editor_rect = editor.tree.area();
+
+        let mut focused_view_id = None;
 
         for (view, is_focused) in editor.tree.views() {
             let doc = editor.document(view.doc).unwrap();
             let doc_id = doc.id();
             let view_id = view.id;
+            let focus_handle = focus_handle.clone();
 
             if is_focused {
+                focused_view_id = Some(view_id);
                 focused_file_name = doc.path();
+                focused_doc = Some(focus_handle.clone());
             }
 
             let style = TextStyle {
@@ -93,6 +105,7 @@ impl Render for Workspace {
             let doc_elem = DocumentView::new(
                 self.editor.clone(),
                 self.keymaps.clone(),
+                self.compositor.clone(),
                 doc_id,
                 view_id,
                 style.clone(),
@@ -139,18 +152,119 @@ impl Render for Workspace {
 
         debug!("rendering workspace");
 
-        let prompt = div().absolute().size_full().top_0().left_0().child(
+        if let Some(handle) = focused_doc {
+            if !handle.is_focused(cx) {
+                println!("FOCUSING {:?}", handle);
+                handle.focus(cx);
+            }
+        }
+
+        let has_prompt = self.prompt.is_some();
+        let prompt = div().absolute().size_full().bottom_0().left_0().child(
             div()
-                .top_20()
+                .absolute()
                 .flex()
+                .left_1()
+                .bottom_7()
                 .flex_col()
-                .items_center()
-                .when(self.prompt.is_some(), |this| {
-                    this.child(self.prompt.as_ref().unwrap().clone())
-                }),
+                .items_start()
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_end()
+                        .when(has_prompt, |this| {
+                            let handle = cx.focus_handle();
+                            let prompt = PromptElement {
+                                prompt: self.prompt.take().unwrap(),
+                                focus: handle.clone(),
+                            };
+                            handle.focus(cx);
+                            this.child(prompt)
+                        }),
+                ),
         );
 
+        let keymaps = self.keymaps.clone();
+        let editor = self.editor.clone();
+        let compositor = self.compositor.clone();
+        let rt_handle = self.handle.clone();
+
+        compositor.update(cx, move |compositor, _cx| {
+            compositor.resize(editor_rect);
+        });
+
         div()
+            .on_key_down(move |ev, cx| {
+                println!("WORKSPACE KEY DOWN: {:?}", ev.keystroke);
+                let keymaps = keymaps.clone();
+
+                let key = crate::utils::translate_key(&ev.keystroke);
+
+                debug!("WORKSPACE KEY EVENT {:?}", key);
+
+                editor.update(cx, |editor, cx| {
+                    let _guard = rt_handle.enter();
+                    let mode = editor.mode();
+
+                    let mut ctx = helix_term::commands::Context {
+                        editor,
+                        register: None,
+                        count: None,
+                        callback: Vec::new(),
+                        on_next_key_callback: None,
+                        jobs: &mut helix_term::job::Jobs::new(),
+                    };
+
+                    let is_handled = compositor.update(cx, |compositor, _cx| {
+                        let mut comp_ctx = helix_term::compositor::Context {
+                            editor: ctx.editor,
+                            scroll: None,
+                            jobs: &mut helix_term::job::Jobs::new(),
+                        };
+                        let is_handled = compositor
+                            .handle_event(&helix_view::input::Event::Key(key), &mut comp_ctx);
+                        println!("is handled? {:?}", is_handled);
+
+                        is_handled
+                    });
+
+                    if !is_handled {
+                        let kmap = keymaps.update(cx, |keymaps, _cx| keymaps.get(mode, key));
+                        let res = crate::utils::handle_key_result(mode, &mut ctx, kmap);
+                        info!("key result: {:?}", res);
+                    }
+
+                    let prompt = if ctx.callback.len() != 0 || is_handled {
+                        let callbacks = ctx.callback;
+                        let prompt = compositor.update(cx, |compositor, _cx| {
+                            Prompt::make(compositor, &mut ctx.editor, callbacks)
+                        });
+
+                        if prompt.is_empty() {
+                            None
+                        } else {
+                            Some(prompt)
+                        }
+                    } else {
+                        None
+                    };
+
+                    if let Some(info) = editor.autoinfo.take() {
+                        cx.emit(crate::Update::Info(info));
+                    }
+
+                    if let Some(view_id) = focused_view_id {
+                        editor.ensure_cursor_in_view(view_id);
+                    }
+                    drop(_guard);
+                    if let Some(prompt) = prompt {
+                        cx.emit(crate::Update::Prompt(prompt));
+                    }
+                    cx.notify();
+                    cx.emit(crate::Update::Redraw);
+                });
+            })
             .on_action(move |&crate::About, _cx| {
                 eprintln!("hello");
             })
@@ -183,7 +297,7 @@ impl Render for Workspace {
             .focusable()
             .child(top_bar)
             .children(docs)
-            .when(self.prompt.is_some(), move |this| this.child(prompt))
+            .when(has_prompt, move |this| this.child(prompt))
             .when(self.info.is_some(), move |this| {
                 this.child(self.info.take().unwrap())
             })
