@@ -1,4 +1,5 @@
-use gpui::{rgb, Hsla, Keystroke};
+use gpui::{rgb, HighlightStyle, Hsla, Keystroke, SharedString, StyledText, TextStyle};
+use tui::buffer::Buffer;
 
 pub fn color_to_hsla(color: helix_view::graphics::Color) -> Option<Hsla> {
     use gpui::{black, blue, green, red, white, yellow};
@@ -116,4 +117,80 @@ pub fn handle_key_result(
         KeymapResult::NotFound | KeymapResult::Cancelled(_) => return Some(key_result),
     }
     None
+}
+
+#[derive(Debug, Clone)]
+pub struct TextWithStyle {
+    text: SharedString,
+    highlights: Vec<(std::ops::Range<usize>, HighlightStyle)>,
+}
+
+impl TextWithStyle {
+    pub fn from_buffer(buf: Buffer) -> Self {
+        let mut highlights: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
+
+        let mut text = String::new();
+        let rect = buf.area;
+
+        for y in 0..rect.height {
+            let mut line = String::new();
+            for x in 0..rect.width {
+                let cell = &buf[(x, y)];
+                let bg = crate::utils::color_to_hsla(cell.bg);
+                let fg = crate::utils::color_to_hsla(cell.fg);
+                let new_style = HighlightStyle {
+                    color: fg,
+                    background_color: bg,
+                    ..Default::default()
+                };
+                let length = cell.symbol.len();
+                let new_range = if let Some((range, current_highlight)) = highlights.last_mut() {
+                    if &new_style == current_highlight {
+                        range.end += length;
+                        None
+                    } else {
+                        let range = range.end..range.end + length;
+                        Some(range)
+                    }
+                } else {
+                    let range = 0..length;
+                    Some(range)
+                };
+                if let Some(new_range) = new_range {
+                    highlights.push((new_range, new_style));
+                }
+                line.push_str(&cell.symbol);
+            }
+            if line.chars().all(|c| c == ' ') {
+                let mut hl_is_empty = false;
+                if let Some(hl) = highlights.last_mut() {
+                    hl.0.end -= line.len();
+                    hl_is_empty = hl.0.end == hl.0.start;
+                }
+                if hl_is_empty {
+                    highlights.pop();
+                }
+                continue;
+            } else {
+                text.push_str(&line);
+                text.push_str("\n");
+                if let Some(hl) = highlights.last_mut() {
+                    hl.0.end += 1; // new line
+                }
+            }
+        }
+
+        TextWithStyle {
+            text: text.into(),
+            highlights,
+        }
+    }
+
+    pub fn into_styled_text(self, default_style: &TextStyle) -> StyledText {
+        StyledText::new(self.text).with_highlights(default_style, self.highlights)
+    }
+
+    pub fn style(&self, idx: usize) -> Option<&HighlightStyle> {
+        self.highlights.get(idx).map(|(_, style)| style)
+    }
 }
