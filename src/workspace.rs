@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use helix_term::compositor::Compositor;
@@ -12,7 +14,7 @@ use crate::prompt::{Prompt, PromptElement};
 use crate::statusline::StatusLine;
 
 pub struct Workspace {
-    editor: Model<Editor>,
+    editor: Model<Arc<Mutex<Editor>>>,
     view: Model<EditorView>,
     compositor: Model<Compositor>,
     handle: tokio::runtime::Handle,
@@ -23,7 +25,7 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new(
-        editor: Model<Editor>,
+        editor: Model<Arc<Mutex<Editor>>>,
         view: Model<EditorView>,
         compositor: Model<Compositor>,
         handle: tokio::runtime::Handle,
@@ -40,20 +42,28 @@ impl Workspace {
     }
 
     pub fn handle_event(&mut self, ev: &crate::Update, cx: &mut ViewContext<Self>) {
-        info!("handling editor event {:?}", ev);
+        info!("handling event {:?}", ev);
         match ev {
-            crate::Update::Redraw => {}
+            crate::Update::EditorEvent(ev) => {
+                println!("HANDLING EDITOR EVENT {:?}", ev);
+            }
+            crate::Update::Redraw => {
+                cx.notify();
+            }
             crate::Update::Prompt(prompt) => {
                 self.prompt = Some(prompt.clone());
+                cx.notify();
             }
             crate::Update::Picker(picker) => {
                 self.picker = Some(picker.clone());
+                cx.notify();
             }
             crate::Update::Info(info) => {
-                info!("INFO {:?}", info);
                 let editor = self.editor.read(cx);
+                let editor = editor.lock().unwrap();
                 let text_style = editor.theme.get("ui.text.info");
                 let popup_style = editor.theme.get("ui.popup.info");
+                drop(editor);
                 let fg = text_style
                     .fg
                     .and_then(crate::utils::color_to_hsla)
@@ -67,6 +77,7 @@ impl Workspace {
                 style.background = Some(bg.into());
 
                 self.info = Some(InfoBox::new(info, style));
+                cx.notify();
             }
         }
     }
@@ -76,6 +87,8 @@ impl Render for Workspace {
     fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
         let focus_handle = cx.focus_handle();
         let editor = self.editor.read(cx);
+        let editor = editor.clone();
+        let editor = editor.lock().unwrap();
         let default_style = editor.theme.get("ui.background");
         let default_ui_text = editor.theme.get("ui.text");
         let bg_color = crate::utils::color_to_hsla(default_style.bg.unwrap()).unwrap_or(black());
@@ -207,10 +220,11 @@ impl Render for Workspace {
 
                 editor.update(cx, |editor, cx| {
                     let _guard = rt_handle.enter();
+                    let mut editor = editor.lock().unwrap();
 
-                    compositor.update(cx, |compositor, cx| {
+                    let is_handled = compositor.update(cx, |compositor, cx| {
                         let mut comp_ctx = helix_term::compositor::Context {
-                            editor,
+                            editor: &mut editor,
                             scroll: None,
                             jobs: &mut helix_term::job::Jobs::new(),
                         };
@@ -230,8 +244,9 @@ impl Render for Workspace {
                                 is_handled
                             });
                         }
-                        debug!("is handled? {:?}", is_handled);
+                        is_handled
                     });
+                    debug!("is handled? {:?}", is_handled);
 
                     let (prompt, picker) = compositor.update(cx, |compositor, _cx| {
                         use crate::picker::Picker as PickerComponent;
@@ -241,12 +256,12 @@ impl Render for Workspace {
                             .find_id::<Overlay<Picker<PathBuf>>>(helix_term::ui::picker::ID)
                         {
                             println!("found file picker");
-                            Some(PickerComponent::make(editor, &mut p.content))
+                            Some(PickerComponent::make(&mut editor, &mut p.content))
                         } else {
                             None
                         };
                         let prompt = if let Some(p) = compositor.find::<helix_term::ui::Prompt>() {
-                            Some(Prompt::make(editor, p))
+                            Some(Prompt::make(&mut editor, p))
                         } else {
                             None
                         };
@@ -269,7 +284,6 @@ impl Render for Workspace {
                         editor.ensure_cursor_in_view(view_id);
                     }
                     drop(_guard);
-                    cx.notify();
                     cx.emit(crate::Update::Redraw);
                 });
             })
@@ -312,7 +326,7 @@ impl Render for Workspace {
     }
 }
 
-fn open(editor: Model<Editor>, handle: tokio::runtime::Handle, cx: &mut WindowContext) {
+fn open(editor: Model<Arc<Mutex<Editor>>>, handle: tokio::runtime::Handle, cx: &mut WindowContext) {
     let path = cx.prompt_for_paths(PathPromptOptions {
         files: true,
         directories: false,
@@ -326,6 +340,7 @@ fn open(editor: Model<Editor>, handle: tokio::runtime::Handle, cx: &mut WindowCo
                 editor.update(cx, move |editor, _cx| {
                     let path = &path[0];
                     let _guard = handle.enter();
+                    let mut editor = editor.lock().unwrap();
                     editor.open(path, Action::Replace).unwrap();
                 })
             })
@@ -335,8 +350,9 @@ fn open(editor: Model<Editor>, handle: tokio::runtime::Handle, cx: &mut WindowCo
     .detach();
 }
 
-fn quit(editor: Model<Editor>, rt: tokio::runtime::Handle, cx: &mut WindowContext) {
+fn quit(editor: Model<Arc<Mutex<Editor>>>, rt: tokio::runtime::Handle, cx: &mut WindowContext) {
     editor.update(cx, |editor, _cx| {
+        let mut editor = editor.lock().unwrap();
         let _guard = rt.enter();
         rt.block_on(async { editor.flush_writes().await }).unwrap();
         let views: Vec<_> = editor.tree.views().map(|(view, _)| view.id).collect();

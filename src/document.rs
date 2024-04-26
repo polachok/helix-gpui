@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::sync::{Arc, Mutex};
 
 use gpui::*;
 use helix_core::{
@@ -12,7 +13,7 @@ use log::{debug, info};
 use crate::utils::color_to_hsla;
 
 pub struct DocumentView {
-    editor: Model<Editor>,
+    editor: Model<Arc<Mutex<Editor>>>,
     doc_id: DocumentId,
     view_id: ViewId,
     style: TextStyle,
@@ -23,7 +24,7 @@ pub struct DocumentView {
 
 impl DocumentView {
     pub fn new(
-        editor: Model<Editor>,
+        editor: Model<Arc<Mutex<Editor>>>,
         doc_id: DocumentId,
         view_id: ViewId,
         style: TextStyle,
@@ -264,6 +265,7 @@ impl Element for DocumentView {
                             width: columns as u16,
                             height: rows as u16,
                         };
+                        let mut editor = editor.lock().unwrap();
                         editor.resize(rect)
                     });
                     DocumentLayout {
@@ -310,8 +312,9 @@ impl Element for DocumentView {
 
                 // println!("{:?}", line_count);
                 editor.update(cx, |editor, cx| {
+                    let mut editor = editor.lock().unwrap();
                     let mut ctx = helix_term::commands::Context {
-                        editor,
+                        editor: &mut editor,
                         register: None,
                         count: None,
                         callback: Vec::new(),
@@ -331,6 +334,8 @@ impl Element for DocumentView {
         self.interactivity
             .paint(bounds, after_layout.hitbox.as_ref(), cx, |_, cx| {
                 let editor = self.editor.read(cx);
+                let editor = editor.clone();
+                let editor = editor.lock().unwrap();
 
                 let view = editor.tree.get(self.view_id);
                 // println!("offset {:?}", view.offset);
@@ -440,6 +445,7 @@ impl Element for DocumentView {
                     previous_region = Some(*reg);
                 }
 
+                drop(editor);
                 let shaped_lines = cx
                     .text_system()
                     .shape_text(str, after_layout.font_size, &runs, None)
@@ -486,7 +492,8 @@ impl Element for DocumentView {
                 }
                 // draw gutter
                 {
-                    let editor = self.editor.read(cx);
+                    let editor = self.editor.read(cx).clone();
+                    let editor = editor.lock().unwrap();
                     let theme = &editor.theme;
                     let view = editor.tree.get(self.view_id);
                     let document = editor.document(self.doc_id).unwrap();
@@ -560,7 +567,7 @@ impl Element for DocumentView {
                     {
                         let mut gutters = Vec::new();
                         Self::init_gutter::<Lol>(
-                            editor,
+                            &editor,
                             document,
                             view,
                             theme,

@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use anyhow::{Context, Error, Result};
 use helix_loader::VERSION_AND_GIT_HASH;
 use helix_term::args::Args;
@@ -5,8 +7,8 @@ use helix_term::config::{Config, ConfigLoadError};
 use helix_view::Editor;
 
 use gpui::{
-    actions, App, AppContext, Context as _, Menu, MenuItem, TitlebarOptions, VisualContext as _,
-    WindowBackgroundAppearance, WindowKind, WindowOptions,
+    actions, App, AppContext, BorrowAppContext, Context as _, Menu, MenuItem, TitlebarOptions,
+    VisualContext as _, WindowBackgroundAppearance, WindowKind, WindowOptions,
 };
 
 use application::Application;
@@ -110,16 +112,48 @@ pub enum Update {
     Prompt(prompt::Prompt),
     Picker(picker::Picker),
     Info(helix_view::info::Info),
+    EditorEvent(helix_view::editor::EditorEvent),
 }
 
-impl gpui::EventEmitter<Update> for Editor {}
+impl gpui::EventEmitter<Update> for Arc<Mutex<Editor>> {}
 
 fn gui_main(app: Application, handle: tokio::runtime::Handle) {
     App::new().run(|cx: &mut AppContext| {
         let options = window_options(cx);
 
         cx.open_window(options, |cx| {
-            let editor = cx.new_model(|_mc| app.editor);
+            let editor = Arc::new(Mutex::new(app.editor));
+            let editor_1 = editor.clone();
+
+            let editor = cx.new_model(|_mc| editor);
+            let editor_model = editor.clone();
+            let handle_1 = handle.clone();
+
+            cx.spawn(move |mut cx| {
+                let handle_1 = handle_1.clone();
+                let model = editor_model.clone();
+
+                async move {
+                    use std::time::Duration;
+                    let model = model.clone();
+                    let editor = editor_1.clone();
+                    let _guard = handle_1.enter();
+                    loop {
+                        use tokio::time::timeout;
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        let mut editor = editor.lock().unwrap();
+                        if let Ok(event) =
+                            timeout(Duration::from_millis(50), editor.wait_event()).await
+                        {
+                            drop(editor);
+                            let _ = cx.update_model(&model, |_, cx| {
+                                cx.emit(Update::EditorEvent(event));
+                            });
+                        }
+                    }
+                }
+            })
+            .detach();
             let view = cx.new_model(|_mc| app.view);
             let compositor = cx.new_model(|_mc| app.compositor);
 
@@ -129,7 +163,6 @@ fn gui_main(app: Application, handle: tokio::runtime::Handle) {
             cx.new_view(|cx| {
                 cx.subscribe(&editor, |w: &mut workspace::Workspace, _, ev, cx| {
                     w.handle_event(ev, cx);
-                    cx.notify()
                 })
                 .detach();
                 workspace::Workspace::new(editor, view, compositor, handle)
