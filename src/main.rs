@@ -14,6 +14,7 @@ use application::Application;
 mod application;
 mod document;
 mod info_box;
+mod picker;
 mod prompt;
 mod statusline;
 mod utils;
@@ -107,6 +108,7 @@ fn app_menus() -> Vec<Menu<'static>> {
 pub enum Update {
     Redraw,
     Prompt(prompt::Prompt),
+    Picker(picker::Picker),
     Info(helix_view::info::Info),
 }
 

@@ -7,6 +7,7 @@ use log::{debug, info};
 
 use crate::document::DocumentView;
 use crate::info_box::InfoBox;
+use crate::picker::{Picker, PickerElement};
 use crate::prompt::{Prompt, PromptElement};
 use crate::statusline::StatusLine;
 
@@ -16,6 +17,7 @@ pub struct Workspace {
     compositor: Model<Compositor>,
     handle: tokio::runtime::Handle,
     prompt: Option<Prompt>,
+    picker: Option<Picker>,
     info: Option<InfoBox>,
 }
 
@@ -32,6 +34,7 @@ impl Workspace {
             compositor,
             handle,
             prompt: None,
+            picker: None,
             info: None,
         }
     }
@@ -42,6 +45,9 @@ impl Workspace {
             crate::Update::Redraw => {}
             crate::Update::Prompt(prompt) => {
                 self.prompt = Some(prompt.clone());
+            }
+            crate::Update::Picker(picker) => {
+                self.picker = Some(picker.clone());
             }
             crate::Update::Info(info) => {
                 info!("INFO {:?}", info);
@@ -156,29 +162,32 @@ impl Render for Workspace {
         }
 
         let has_prompt = self.prompt.is_some();
-        let prompt = div().absolute().size_full().bottom_0().left_0().child(
+        let has_picker = self.picker.is_some();
+        let has_overlay = has_prompt || has_picker;
+        let overlay = div().absolute().size_full().bottom_0().left_0().child(
             div()
-                .absolute()
                 .flex()
-                .left_1()
-                .bottom_7()
-                .flex_col()
-                .items_start()
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_end()
-                        .when(has_prompt, |this| {
-                            let handle = cx.focus_handle();
-                            let prompt = PromptElement {
-                                prompt: self.prompt.take().unwrap(),
-                                focus: handle.clone(),
-                            };
-                            handle.focus(cx);
-                            this.child(prompt)
-                        }),
-                ),
+                .h_full()
+                .justify_center()
+                .items_center()
+                .when(has_prompt, |this| {
+                    let handle = cx.focus_handle();
+                    let prompt = PromptElement {
+                        prompt: self.prompt.take().unwrap(),
+                        focus: handle.clone(),
+                    };
+                    handle.focus(cx);
+                    this.child(prompt)
+                })
+                .when(has_picker, |this| {
+                    let handle = cx.focus_handle();
+                    let picker = PickerElement {
+                        picker: self.picker.take().unwrap(),
+                        focus: handle.clone(),
+                    };
+                    handle.focus(cx);
+                    this.child(picker)
+                }),
         );
 
         let editor = self.editor.clone();
@@ -224,17 +233,29 @@ impl Render for Workspace {
                         debug!("is handled? {:?}", is_handled);
                     });
 
-                    let prompt = {
-                        let prompt = compositor.update(cx, |compositor, _cx| {
-                            if let Some(p) = compositor.find::<helix_term::ui::Prompt>() {
-                                Some(Prompt::make(editor, p))
-                            } else {
-                                None
-                            }
-                        });
+                    let (prompt, picker) = compositor.update(cx, |compositor, _cx| {
+                        use crate::picker::Picker as PickerComponent;
+                        use helix_term::ui::{overlay::Overlay, Picker};
+                        use std::path::PathBuf;
+                        let picker = if let Some(p) = compositor
+                            .find_id::<Overlay<Picker<PathBuf>>>(helix_term::ui::picker::ID)
+                        {
+                            println!("found file picker");
+                            Some(PickerComponent::make(editor, &mut p.content))
+                        } else {
+                            None
+                        };
+                        let prompt = if let Some(p) = compositor.find::<helix_term::ui::Prompt>() {
+                            Some(Prompt::make(editor, p))
+                        } else {
+                            None
+                        };
+                        (prompt, picker)
+                    });
 
-                        prompt
-                    };
+                    if let Some(picker) = picker {
+                        cx.emit(crate::Update::Picker(picker));
+                    }
 
                     if let Some(prompt) = prompt {
                         cx.emit(crate::Update::Prompt(prompt));
@@ -284,7 +305,7 @@ impl Render for Workspace {
             .focusable()
             .child(top_bar)
             .children(docs)
-            .when(has_prompt, move |this| this.child(prompt))
+            .when(has_overlay, move |this| this.child(overlay))
             .when(self.info.is_some(), move |this| {
                 this.child(self.info.take().unwrap())
             })
