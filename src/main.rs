@@ -7,8 +7,8 @@ use helix_term::config::{Config, ConfigLoadError};
 use helix_view::Editor;
 
 use gpui::{
-    actions, App, AppContext, BorrowAppContext, Context as _, Menu, MenuItem, TitlebarOptions,
-    VisualContext as _, WindowBackgroundAppearance, WindowKind, WindowOptions,
+    actions, App, AppContext, Context as _, Menu, MenuItem, TitlebarOptions, VisualContext as _,
+    WindowBackgroundAppearance, WindowKind, WindowOptions,
 };
 
 use application::Application;
@@ -16,6 +16,7 @@ use application::Application;
 mod application;
 mod document;
 mod info_box;
+mod notification;
 mod picker;
 mod prompt;
 mod statusline;

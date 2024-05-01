@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use helix_lsp::lsp::{NumberOrString, ProgressParamsValue, WorkDoneProgress};
 use helix_term::compositor::Compositor;
 use helix_term::ui::EditorView;
 use helix_view::Editor;
@@ -9,9 +11,17 @@ use log::{debug, info};
 
 use crate::document::DocumentView;
 use crate::info_box::InfoBox;
+use crate::notification::{LspStatus, Notification};
 use crate::picker::{Picker, PickerElement};
 use crate::prompt::{Prompt, PromptElement};
 use crate::statusline::StatusLine;
+
+enum LspStatusEvent {
+    Begin,
+    Progress,
+    End,
+    Ignore,
+}
 
 pub struct Workspace {
     editor: Model<Arc<Mutex<Editor>>>,
@@ -21,6 +31,7 @@ pub struct Workspace {
     prompt: Option<Prompt>,
     picker: Option<Picker>,
     info: Option<InfoBox>,
+    lsp_status: HashMap<usize, LspStatus>,
 }
 
 impl Workspace {
@@ -38,14 +49,101 @@ impl Workspace {
             prompt: None,
             picker: None,
             info: None,
+            lsp_status: HashMap::default(),
         }
+    }
+
+    fn handle_lsp_call(&mut self, id: usize, call: &helix_lsp::Call) -> LspStatusEvent {
+        use helix_lsp::{Call, Notification};
+        let mut ev = LspStatusEvent::Ignore;
+
+        let status = self.lsp_status.entry(id).or_default();
+
+        match call {
+            Call::Notification(notification) => {
+                if let Ok(notification) =
+                    Notification::parse(&notification.method, notification.params.clone())
+                {
+                    match notification {
+                        Notification::ProgressMessage(ref msg) => {
+                            let token = match msg.token.clone() {
+                                NumberOrString::String(s) => s,
+                                NumberOrString::Number(num) => num.to_string(),
+                            };
+                            status.token = token;
+                            let ProgressParamsValue::WorkDone(value) = msg.value.clone();
+                            match value {
+                                WorkDoneProgress::Begin(begin) => {
+                                    status.title = begin.title;
+                                    status.message = begin.message;
+                                    status.percentage = begin.percentage;
+                                    ev = LspStatusEvent::Begin;
+                                }
+                                WorkDoneProgress::Report(report) => {
+                                    if let Some(msg) = report.message {
+                                        status.message = Some(msg);
+                                    }
+                                    status.percentage = report.percentage;
+
+                                    ev = LspStatusEvent::Progress;
+                                }
+                                WorkDoneProgress::End(end) => {
+                                    if let Some(msg) = end.message {
+                                        status.message = Some(msg);
+                                    }
+                                    ev = LspStatusEvent::End;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+        // println!("{:?}", status);
+        ev
     }
 
     pub fn handle_event(&mut self, ev: &crate::Update, cx: &mut ViewContext<Self>) {
         info!("handling event {:?}", ev);
         match ev {
             crate::Update::EditorEvent(ev) => {
-                println!("HANDLING EDITOR EVENT {:?}", ev);
+                use helix_view::editor::EditorEvent;
+                match ev {
+                    EditorEvent::Redraw => cx.notify(),
+                    EditorEvent::LanguageServerMessage((id, call)) => {
+                        let ev = self.handle_lsp_call(*id, call);
+                        match ev {
+                            LspStatusEvent::Begin => {
+                                cx.notify();
+                                let id = *id;
+                                cx.spawn(|this, mut cx| async move {
+                                    loop {
+                                        cx.background_executor()
+                                            .timer(std::time::Duration::from_millis(500))
+                                            .await;
+                                        this.update(&mut cx, |this, cx| {
+                                            if this.lsp_status.contains_key(&id) {
+                                                //cx.notify();
+                                            }
+                                        })
+                                        .ok();
+                                    }
+                                })
+                                .detach();
+                            }
+                            LspStatusEvent::Progress => {}
+                            LspStatusEvent::Ignore => {}
+                            LspStatusEvent::End => {
+                                self.lsp_status.remove(id);
+                            }
+                        }
+                    }
+                    _ => {
+                        info!("editor event {:?} not handled", ev);
+                    }
+                }
             }
             crate::Update::Redraw => {
                 cx.notify();
@@ -89,11 +187,19 @@ impl Render for Workspace {
         let editor = self.editor.read(cx);
         let editor = editor.clone();
         let editor = editor.lock().unwrap();
+
         let default_style = editor.theme.get("ui.background");
         let default_ui_text = editor.theme.get("ui.text");
         let bg_color = crate::utils::color_to_hsla(default_style.bg.unwrap()).unwrap_or(black());
         let text_color =
             crate::utils::color_to_hsla(default_ui_text.fg.unwrap()).unwrap_or(white());
+
+        let text_style = editor.theme.get("ui.text.info");
+        let popup_style = editor.theme.get("ui.popup.info");
+        let popup_bg_color =
+            crate::utils::color_to_hsla(popup_style.bg.unwrap()).unwrap_or(black());
+        let popup_text_color =
+            crate::utils::color_to_hsla(text_style.fg.unwrap()).unwrap_or(white());
 
         let mut docs = vec![];
         let mut focused_file_name = None;
@@ -320,6 +426,31 @@ impl Render for Workspace {
             .child(top_bar)
             .children(docs)
             .when(has_overlay, move |this| this.child(overlay))
+            .when(!self.lsp_status.is_empty(), |this| {
+                let mut notifications = vec![];
+                println!("{:?}", self.lsp_status);
+                for status in self.lsp_status.values() {
+                    if status.is_empty() {
+                        continue;
+                    }
+                    notifications.push(Notification::from_lsp(
+                        status,
+                        popup_bg_color,
+                        popup_text_color,
+                    ));
+                }
+                let area = div()
+                    .absolute()
+                    .w(DefiniteLength::Fraction(0.33))
+                    .top_8()
+                    .right_5()
+                    .flex_col()
+                    .gap_8()
+                    .justify_start()
+                    .items_center()
+                    .children(notifications);
+                this.child(area)
+            })
             .when(self.info.is_some(), move |this| {
                 this.child(self.info.take().unwrap())
             })

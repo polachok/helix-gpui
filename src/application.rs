@@ -27,7 +27,7 @@ pub fn init_editor(
     theme_parent_dirs.extend(helix_loader::runtime_dirs().iter().cloned());
     let theme_loader = std::sync::Arc::new(theme::Loader::new(&theme_parent_dirs));
 
-    let true_color = config.editor.true_color || true;
+    let true_color = true;
     let theme = config
         .theme
         .as_ref()
