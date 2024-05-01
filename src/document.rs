@@ -42,7 +42,14 @@ impl DocumentView {
 }
 
 impl Render for DocumentView {
-    fn render(&mut self, _cx: &mut ViewContext<Self>) -> impl IntoElement {
+    fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
+        println!("{:?} rendering document view", self.view_id);
+
+        cx.on_focus(&self.focus, |this, cx| {
+            this.is_focused = this.focus.is_focused(cx)
+        })
+        .detach();
+
         let doc = DocumentElement::new(
             self.editor.clone(),
             self.doc_id.clone(),
