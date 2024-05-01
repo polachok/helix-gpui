@@ -23,6 +23,8 @@ mod statusline;
 mod utils;
 mod workspace;
 
+pub type EditorModel = Arc<Mutex<Editor>>;
+
 fn setup_logging(verbosity: u64) -> Result<()> {
     let mut base_config = fern::Dispatch::new();
 
@@ -166,7 +168,7 @@ fn gui_main(app: Application, handle: tokio::runtime::Handle) {
                     w.handle_event(ev, cx);
                 })
                 .detach();
-                workspace::Workspace::new(editor, view, compositor, handle)
+                workspace::Workspace::new(editor, view, compositor, handle, cx)
             })
         });
     })

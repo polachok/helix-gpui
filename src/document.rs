@@ -43,10 +43,33 @@ impl DocumentView {
 
 impl Render for DocumentView {
     fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
-        println!("{:?} rendering document view", self.view_id);
+        println!("{:?}: rendering document view", self.view_id);
 
-        cx.on_focus(&self.focus, |this, cx| {
-            this.is_focused = this.focus.is_focused(cx)
+        cx.on_focus_out(&self.focus, |this, cx| {
+            let is_focused = this.focus.is_focused(cx);
+
+            if this.is_focused != is_focused {
+                this.is_focused = is_focused;
+                cx.notify();
+            }
+            debug!(
+                "{:?} document view focus changed OUT: {:?}",
+                this.view_id, this.is_focused
+            );
+        })
+        .detach();
+
+        cx.on_focus_in(&self.focus, |this, cx| {
+            let is_focused = this.focus.is_focused(cx);
+
+            if this.is_focused != is_focused {
+                this.is_focused = is_focused;
+                cx.notify();
+            }
+            debug!(
+                "{:?} document view focus changed IN: {:?}",
+                this.view_id, this.is_focused
+            );
         })
         .detach();
 
@@ -300,9 +323,10 @@ impl Element for DocumentElement {
         let lh = after_layout.line_height;
         let editor = self.editor.clone();
         let view_id = self.view_id;
+
         self.interactivity.on_scroll_wheel(move |ev, cx| {
             use helix_core::movement::Direction;
-            // debug!("SCROLL WHEEL {:?}", ev);
+            debug!("SCROLL WHEEL {:?}", ev);
             let delta = ev.delta.pixel_delta(lh);
             if delta.y != px(0.) {
                 let lines = delta.y / lh;
@@ -314,7 +338,7 @@ impl Element for DocumentElement {
                 let line_count = 1 + lines.abs() as usize;
 
                 // println!("{:?}", line_count);
-                editor.update(cx, |editor, cx| {
+                editor.update(cx, |editor, _cx| {
                     let mut editor = editor.lock().unwrap();
                     let mut ctx = helix_term::commands::Context {
                         editor: &mut editor,
@@ -327,9 +351,9 @@ impl Element for DocumentElement {
                     helix_term::commands::scroll(&mut ctx, line_count, direction, false);
 
                     editor.ensure_cursor_in_view(view_id);
-                    cx.notify();
-                    cx.emit(crate::Update::Redraw);
                 });
+                // TODO: this doesn't work because the view is cached, we should redraw
+                // but probably it would be better if we just implement scroll properly
             }
         });
 

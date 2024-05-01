@@ -3,24 +3,17 @@ use std::sync::{Arc, Mutex};
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use helix_lsp::lsp::{NumberOrString, ProgressParamsValue, WorkDoneProgress};
 use helix_term::compositor::Compositor;
 use helix_term::ui::EditorView;
 use helix_view::{Editor, ViewId};
 use log::{debug, info};
 
 use crate::document::DocumentView;
-use crate::info_box::InfoBox;
-use crate::notification::{LspStatus, Notification};
+use crate::info_box::InfoBoxView;
+use crate::notification::NotificationView;
 use crate::picker::{Picker, PickerElement};
 use crate::prompt::{Prompt, PromptElement};
-
-enum LspStatusEvent {
-    Begin,
-    Progress,
-    End,
-    Ignore,
-}
+use crate::EditorModel;
 
 pub struct Workspace {
     editor: Model<Arc<Mutex<Editor>>>,
@@ -30,8 +23,9 @@ pub struct Workspace {
     handle: tokio::runtime::Handle,
     prompt: Option<Prompt>,
     picker: Option<Picker>,
-    info: Option<InfoBox>,
-    lsp_status: HashMap<usize, LspStatus>,
+    info: View<InfoBoxView>,
+    info_hidden: bool,
+    notifications: View<NotificationView>,
 }
 
 impl Workspace {
@@ -40,7 +34,11 @@ impl Workspace {
         view: Model<EditorView>,
         compositor: Model<Compositor>,
         handle: tokio::runtime::Handle,
+        cx: &mut ViewContext<Self>,
     ) -> Self {
+        let notifications = Self::init_notifications(&editor, cx);
+        let info = Self::init_info_box(&editor, cx);
+
         Self {
             editor,
             view,
@@ -48,62 +46,68 @@ impl Workspace {
             handle,
             prompt: None,
             picker: None,
-            info: None,
-            lsp_status: HashMap::default(),
+            info,
+            info_hidden: true,
             documents: HashMap::default(),
+            notifications,
         }
     }
 
-    fn handle_lsp_call(&mut self, id: usize, call: &helix_lsp::Call) -> LspStatusEvent {
-        use helix_lsp::{Call, Notification};
-        let mut ev = LspStatusEvent::Ignore;
+    fn init_notifications(
+        editor: &Model<EditorModel>,
+        cx: &mut ViewContext<Self>,
+    ) -> View<NotificationView> {
+        let theme = Self::theme(&editor, cx);
+        let text_style = theme.get("ui.text.info");
+        let popup_style = theme.get("ui.popup.info");
+        let popup_bg_color =
+            crate::utils::color_to_hsla(popup_style.bg.unwrap()).unwrap_or(black());
+        let popup_text_color =
+            crate::utils::color_to_hsla(text_style.fg.unwrap()).unwrap_or(white());
 
-        let status = self.lsp_status.entry(id).or_default();
+        cx.new_view(|cx| {
+            let view = NotificationView::new(popup_bg_color, popup_text_color);
+            view.subscribe(&editor, cx);
+            view
+        })
+    }
 
-        match call {
-            Call::Notification(notification) => {
-                if let Ok(notification) =
-                    Notification::parse(&notification.method, notification.params.clone())
-                {
-                    match notification {
-                        Notification::ProgressMessage(ref msg) => {
-                            let token = match msg.token.clone() {
-                                NumberOrString::String(s) => s,
-                                NumberOrString::Number(num) => num.to_string(),
-                            };
-                            status.token = token;
-                            let ProgressParamsValue::WorkDone(value) = msg.value.clone();
-                            match value {
-                                WorkDoneProgress::Begin(begin) => {
-                                    status.title = begin.title;
-                                    status.message = begin.message;
-                                    status.percentage = begin.percentage;
-                                    ev = LspStatusEvent::Begin;
-                                }
-                                WorkDoneProgress::Report(report) => {
-                                    if let Some(msg) = report.message {
-                                        status.message = Some(msg);
-                                    }
-                                    status.percentage = report.percentage;
+    fn init_info_box(editor: &Model<EditorModel>, cx: &mut ViewContext<Self>) -> View<InfoBoxView> {
+        let theme = Self::theme(editor, cx);
+        let text_style = theme.get("ui.text.info");
+        let popup_style = theme.get("ui.popup.info");
+        let fg = text_style
+            .fg
+            .and_then(crate::utils::color_to_hsla)
+            .unwrap_or(white());
+        let bg = popup_style
+            .bg
+            .and_then(crate::utils::color_to_hsla)
+            .unwrap_or(black());
+        let mut style = Style::default();
+        style.text.color = Some(fg);
+        style.background = Some(bg.into());
 
-                                    ev = LspStatusEvent::Progress;
-                                }
-                                WorkDoneProgress::End(end) => {
-                                    if let Some(msg) = end.message {
-                                        status.message = Some(msg);
-                                    }
-                                    ev = LspStatusEvent::End;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            _ => {}
-        }
-        // println!("{:?}", status);
-        ev
+        let info = cx.new_view(|cx| {
+            let view = InfoBoxView::new(style, &cx.focus_handle());
+            view.subscribe(&editor, cx);
+            view
+        });
+        cx.subscribe(&info, |v, _e, _evt, cx| {
+            v.info_hidden = true;
+            cx.notify();
+        })
+        .detach();
+        info
+    }
+
+    pub fn theme(
+        editor: &Model<Arc<Mutex<Editor>>>,
+        cx: &mut ViewContext<Self>,
+    ) -> helix_view::Theme {
+        let editor = editor.read(cx);
+        let editor = editor.lock().unwrap();
+        editor.theme.clone()
     }
 
     pub fn handle_event(&mut self, ev: &crate::Update, cx: &mut ViewContext<Self>) {
@@ -113,34 +117,7 @@ impl Workspace {
                 use helix_view::editor::EditorEvent;
                 match ev {
                     EditorEvent::Redraw => cx.notify(),
-                    EditorEvent::LanguageServerMessage((id, call)) => {
-                        let ev = self.handle_lsp_call(*id, call);
-                        match ev {
-                            LspStatusEvent::Begin => {
-                                cx.notify();
-                                let id = *id;
-                                cx.spawn(|this, mut cx| async move {
-                                    loop {
-                                        cx.background_executor()
-                                            .timer(std::time::Duration::from_millis(500))
-                                            .await;
-                                        this.update(&mut cx, |this, cx| {
-                                            if this.lsp_status.contains_key(&id) {
-                                                //cx.notify();
-                                            }
-                                        })
-                                        .ok();
-                                    }
-                                })
-                                .detach();
-                            }
-                            LspStatusEvent::Progress => {}
-                            LspStatusEvent::Ignore => {}
-                            LspStatusEvent::End => {
-                                self.lsp_status.remove(id);
-                            }
-                        }
-                    }
+                    EditorEvent::LanguageServerMessage(_) => { /* handled by notifications */ }
                     _ => {
                         info!("editor event {:?} not handled", ev);
                     }
@@ -157,26 +134,9 @@ impl Workspace {
                 self.picker = Some(picker.clone());
                 cx.notify();
             }
-            crate::Update::Info(info) => {
-                let editor = self.editor.read(cx);
-                let editor = editor.lock().unwrap();
-                let text_style = editor.theme.get("ui.text.info");
-                let popup_style = editor.theme.get("ui.popup.info");
-                drop(editor);
-                let fg = text_style
-                    .fg
-                    .and_then(crate::utils::color_to_hsla)
-                    .unwrap_or(white());
-                let bg = popup_style
-                    .bg
-                    .and_then(crate::utils::color_to_hsla)
-                    .unwrap_or(black());
-                let mut style = Style::default();
-                style.text.color = Some(fg);
-                style.background = Some(bg.into());
-
-                self.info = Some(InfoBox::new(info, style));
-                cx.notify();
+            crate::Update::Info(_) => {
+                self.info_hidden = false;
+                // handled by the info box view
             }
         }
     }
@@ -184,7 +144,6 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
-        let focus_handle = cx.focus_handle();
         let editor = self.editor.read(cx);
         let editor = editor.clone();
         let editor = editor.lock().unwrap();
@@ -194,13 +153,6 @@ impl Render for Workspace {
         let bg_color = crate::utils::color_to_hsla(default_style.bg.unwrap()).unwrap_or(black());
         let text_color =
             crate::utils::color_to_hsla(default_ui_text.fg.unwrap()).unwrap_or(white());
-
-        let text_style = editor.theme.get("ui.text.info");
-        let popup_style = editor.theme.get("ui.popup.info");
-        let popup_bg_color =
-            crate::utils::color_to_hsla(popup_style.bg.unwrap()).unwrap_or(black());
-        let popup_text_color =
-            crate::utils::color_to_hsla(text_style.fg.unwrap()).unwrap_or(white());
 
         let mut focused_file_name = None;
 
@@ -242,10 +194,13 @@ impl Render for Workspace {
 
         let mut docs = vec![];
         for view in self.documents.values() {
-            docs.push(view.clone());
+            docs.push(AnyView::from(view.clone()).cached(StyleRefinement::default().size_full()));
         }
 
-        if let Some(view) = focused_view_id.and_then(|id| self.documents.get(&id)) {
+        let focused_view = focused_view_id
+            .and_then(|id| self.documents.get(&id))
+            .cloned();
+        if let Some(view) = &focused_view {
             cx.focus_view(view);
         }
 
@@ -268,7 +223,7 @@ impl Render for Workspace {
             .items_center()
             .child(label);
 
-        debug!("rendering workspace");
+        println!("rendering workspace");
 
         let has_prompt = self.prompt.is_some();
         let has_picker = self.picker.is_some();
@@ -380,8 +335,12 @@ impl Render for Workspace {
                         editor.ensure_cursor_in_view(view_id);
                     }
                     drop(_guard);
-                    cx.emit(crate::Update::Redraw);
                 });
+
+                if let Some(view) = &focused_view {
+                    cx.focus_view(view);
+                    cx.notify(view.entity_id());
+                }
             })
             .on_action(move |&crate::About, _cx| {
                 eprintln!("hello");
@@ -416,33 +375,15 @@ impl Render for Workspace {
             .child(top_bar)
             .children(docs)
             .when(has_overlay, move |this| this.child(overlay))
-            .when(!self.lsp_status.is_empty(), |this| {
-                let mut notifications = vec![];
-                for status in self.lsp_status.values() {
-                    if status.is_empty() {
-                        continue;
-                    }
-                    notifications.push(Notification::from_lsp(
-                        status,
-                        popup_bg_color,
-                        popup_text_color,
-                    ));
-                }
-                let area = div()
-                    .absolute()
-                    .w(DefiniteLength::Fraction(0.33))
-                    .top_8()
-                    .right_5()
-                    .flex_col()
-                    .gap_8()
-                    .justify_start()
-                    .items_center()
-                    .children(notifications);
-                this.child(area)
-            })
-            .when(self.info.is_some(), move |this| {
-                this.child(self.info.take().unwrap())
-            })
+            .child(self.notifications.clone())
+            .when(
+                !self.info_hidden && !self.info.read(cx).is_empty(),
+                move |this| {
+                    let info = &self.info;
+                    cx.focus_view(&info);
+                    this.child(info.clone())
+                },
+            )
     }
 }
 
