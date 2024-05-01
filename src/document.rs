@@ -17,12 +17,84 @@ pub struct DocumentView {
     doc_id: DocumentId,
     view_id: ViewId,
     style: TextStyle,
-    interactivity: Interactivity,
     focus: FocusHandle,
     is_focused: bool,
 }
 
 impl DocumentView {
+    pub fn new(
+        editor: Model<Arc<Mutex<Editor>>>,
+        doc_id: DocumentId,
+        view_id: ViewId,
+        style: TextStyle,
+        focus: &FocusHandle,
+        is_focused: bool,
+    ) -> Self {
+        Self {
+            editor,
+            doc_id,
+            view_id,
+            style,
+            focus: focus.clone(),
+            is_focused,
+        }
+    }
+}
+
+impl Render for DocumentView {
+    fn render(&mut self, _cx: &mut ViewContext<Self>) -> impl IntoElement {
+        let doc = DocumentElement::new(
+            self.editor.clone(),
+            self.doc_id.clone(),
+            self.view_id.clone(),
+            self.style.clone(),
+            &self.focus,
+            self.is_focused,
+        );
+
+        let status = crate::statusline::StatusLine::new(
+            self.editor.clone(),
+            self.doc_id.clone(),
+            self.view_id,
+            self.is_focused,
+            self.style.clone(),
+        );
+
+        div()
+            .w_full()
+            .h_full()
+            .flex()
+            .flex_col()
+            .child(doc)
+            .child(status)
+    }
+}
+
+impl FocusableView for DocumentView {
+    fn focus_handle(&self, _cx: &AppContext) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+pub struct DocumentElement {
+    editor: Model<Arc<Mutex<Editor>>>,
+    doc_id: DocumentId,
+    view_id: ViewId,
+    style: TextStyle,
+    interactivity: Interactivity,
+    focus: FocusHandle,
+    is_focused: bool,
+}
+
+impl IntoElement for DocumentElement {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl DocumentElement {
     pub fn new(
         editor: Model<Arc<Mutex<Editor>>>,
         doc_id: DocumentId,
@@ -113,13 +185,13 @@ impl DocumentView {
     }
 }
 
-impl InteractiveElement for DocumentView {
+impl InteractiveElement for DocumentElement {
     fn interactivity(&mut self) -> &mut Interactivity {
         &mut self.interactivity
     }
 }
 
-impl StatefulInteractiveElement for DocumentView {}
+impl StatefulInteractiveElement for DocumentElement {}
 
 #[derive(Debug)]
 #[allow(unused)]
@@ -141,7 +213,7 @@ impl<'a> Into<SharedString> for RopeWrapper<'a> {
     }
 }
 
-impl Element for DocumentView {
+impl Element for DocumentElement {
     type BeforeLayout = ();
 
     type AfterLayout = DocumentLayout;
@@ -632,14 +704,6 @@ impl Highlights {
             highlights.push(region);
         }
         highlights
-    }
-}
-
-impl IntoElement for DocumentView {
-    type Element = Self;
-
-    fn into_element(self) -> Self {
-        self
     }
 }
 

@@ -6,7 +6,7 @@ use gpui::*;
 use helix_lsp::lsp::{NumberOrString, ProgressParamsValue, WorkDoneProgress};
 use helix_term::compositor::Compositor;
 use helix_term::ui::EditorView;
-use helix_view::Editor;
+use helix_view::{Editor, ViewId};
 use log::{debug, info};
 
 use crate::document::DocumentView;
@@ -14,7 +14,6 @@ use crate::info_box::InfoBox;
 use crate::notification::{LspStatus, Notification};
 use crate::picker::{Picker, PickerElement};
 use crate::prompt::{Prompt, PromptElement};
-use crate::statusline::StatusLine;
 
 enum LspStatusEvent {
     Begin,
@@ -26,6 +25,7 @@ enum LspStatusEvent {
 pub struct Workspace {
     editor: Model<Arc<Mutex<Editor>>>,
     view: Model<EditorView>,
+    documents: HashMap<ViewId, View<DocumentView>>,
     compositor: Model<Compositor>,
     handle: tokio::runtime::Handle,
     prompt: Option<Prompt>,
@@ -50,6 +50,7 @@ impl Workspace {
             picker: None,
             info: None,
             lsp_status: HashMap::default(),
+            documents: HashMap::default(),
         }
     }
 
@@ -201,9 +202,7 @@ impl Render for Workspace {
         let popup_text_color =
             crate::utils::color_to_hsla(text_style.fg.unwrap()).unwrap_or(white());
 
-        let mut docs = vec![];
         let mut focused_file_name = None;
-        let mut focused_doc = None;
 
         let editor_rect = editor.tree.area();
 
@@ -213,12 +212,10 @@ impl Render for Workspace {
             let doc = editor.document(view.doc).unwrap();
             let doc_id = doc.id();
             let view_id = view.id;
-            let focus_handle = focus_handle.clone();
 
             if is_focused {
                 focused_view_id = Some(view_id);
                 focused_file_name = doc.path();
-                focused_doc = Some(focus_handle.clone());
             }
 
             let style = TextStyle {
@@ -227,30 +224,29 @@ impl Render for Workspace {
                 ..Default::default()
             };
 
-            let doc_elem = DocumentView::new(
-                self.editor.clone(),
-                doc_id,
-                view_id,
-                style.clone(),
-                &focus_handle,
-                is_focused,
-            );
-            let status = StatusLine::new(
-                self.editor.clone(),
-                doc_id,
-                view_id,
-                is_focused,
-                style.clone(),
-            );
+            let view = cx.new_view(|cx| {
+                DocumentView::new(
+                    self.editor.clone(),
+                    doc_id,
+                    view_id,
+                    style.clone(),
+                    &cx.focus_handle(),
+                    is_focused,
+                )
+            });
+            if !self.documents.contains_key(&view_id) {
+                self.documents.insert(view_id, view.clone());
+            }
+        }
+        // TODO: remove views that are not in the tree
 
-            let view = div()
-                .w_full()
-                .h_full()
-                .flex()
-                .flex_col()
-                .child(doc_elem)
-                .child(status);
-            docs.push(view);
+        let mut docs = vec![];
+        for view in self.documents.values() {
+            docs.push(view.clone());
+        }
+
+        if let Some(view) = focused_view_id.and_then(|id| self.documents.get(&id)) {
+            cx.focus_view(view);
         }
 
         let label = if let Some(path) = focused_file_name {
@@ -273,12 +269,6 @@ impl Render for Workspace {
             .child(label);
 
         debug!("rendering workspace");
-
-        if let Some(handle) = focused_doc {
-            if !handle.is_focused(cx) {
-                handle.focus(cx);
-            }
-        }
 
         let has_prompt = self.prompt.is_some();
         let has_picker = self.picker.is_some();
@@ -428,7 +418,6 @@ impl Render for Workspace {
             .when(has_overlay, move |this| this.child(overlay))
             .when(!self.lsp_status.is_empty(), |this| {
                 let mut notifications = vec![];
-                println!("{:?}", self.lsp_status);
                 for status in self.lsp_status.values() {
                     if status.is_empty() {
                         continue;
