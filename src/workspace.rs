@@ -162,7 +162,6 @@ impl Render for Workspace {
 
         for (view, is_focused) in editor.tree.views() {
             let doc = editor.document(view.doc).unwrap();
-            let doc_id = doc.id();
             let view_id = view.id;
 
             if is_focused {
@@ -176,19 +175,17 @@ impl Render for Workspace {
                 ..Default::default()
             };
 
-            let view = cx.new_view(|cx| {
-                DocumentView::new(
-                    self.editor.clone(),
-                    doc_id,
-                    view_id,
-                    style.clone(),
-                    &cx.focus_handle(),
-                    is_focused,
-                )
+            let _doc_view = self.documents.entry(view_id).or_insert_with(|| {
+                cx.new_view(|cx| {
+                    DocumentView::new(
+                        self.editor.clone(),
+                        view_id,
+                        style.clone(),
+                        &cx.focus_handle(),
+                        is_focused,
+                    )
+                })
             });
-            if !self.documents.contains_key(&view_id) {
-                self.documents.insert(view_id, view.clone());
-            }
         }
         // TODO: remove views that are not in the tree
 

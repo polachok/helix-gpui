@@ -139,7 +139,7 @@ impl NotificationView {
                     cx.spawn(|this, mut cx| async move {
                         loop {
                             cx.background_executor()
-                                .timer(std::time::Duration::from_millis(1000))
+                                .timer(std::time::Duration::from_millis(5000))
                                 .await;
                             this.update(&mut cx, |this, cx| {
                                 if this.lsp_status.contains_key(&id) {

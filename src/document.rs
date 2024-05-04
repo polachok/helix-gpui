@@ -14,7 +14,6 @@ use crate::utils::color_to_hsla;
 
 pub struct DocumentView {
     editor: Model<Arc<Mutex<Editor>>>,
-    doc_id: DocumentId,
     view_id: ViewId,
     style: TextStyle,
     focus: FocusHandle,
@@ -24,7 +23,6 @@ pub struct DocumentView {
 impl DocumentView {
     pub fn new(
         editor: Model<Arc<Mutex<Editor>>>,
-        doc_id: DocumentId,
         view_id: ViewId,
         style: TextStyle,
         focus: &FocusHandle,
@@ -32,7 +30,6 @@ impl DocumentView {
     ) -> Self {
         Self {
             editor,
-            doc_id,
             view_id,
             style,
             focus: focus.clone(),
@@ -73,9 +70,15 @@ impl Render for DocumentView {
         })
         .detach();
 
+        let doc_id = {
+            let editor = self.editor.read(cx).lock().unwrap();
+            let view = editor.tree.get(self.view_id);
+            view.doc
+        };
+
         let doc = DocumentElement::new(
             self.editor.clone(),
-            self.doc_id.clone(),
+            doc_id.clone(),
             self.view_id.clone(),
             self.style.clone(),
             &self.focus,
@@ -84,7 +87,7 @@ impl Render for DocumentView {
 
         let status = crate::statusline::StatusLine::new(
             self.editor.clone(),
-            self.doc_id.clone(),
+            doc_id.clone(),
             self.view_id,
             self.is_focused,
             self.style.clone(),
