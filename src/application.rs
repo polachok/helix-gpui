@@ -69,8 +69,8 @@ pub fn init_editor(
     );
 
     if args.load_tutor {
-        //let path = helix_loader::runtime_file(Path::new("tutor"));
-        let path = Path::new("./test.rs");
+        let path = helix_loader::runtime_file(Path::new("tutor"));
+        // let path = Path::new("./test.rs");
         let doc_id = editor.open(&path, Action::VerticalSplit)?;
         let view_id = editor.tree.focus;
         let doc = doc_mut!(editor, &doc_id);
@@ -83,9 +83,10 @@ pub fn init_editor(
 
         // Unset path to prevent accidentally saving to the original tutor file.
         //doc_mut!(editor).set_path(None);
+    } else {
+        editor.new_file(Action::VerticalSplit);
     }
 
-    //editor.new_file(Action::VerticalSplit);
     editor.set_theme(theme);
 
     let keys = Box::new(Map::new(Arc::clone(&config), |config: &Config| {
