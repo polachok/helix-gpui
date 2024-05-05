@@ -2,7 +2,6 @@ use std::borrow::Cow;
 
 use gpui::*;
 use helix_core::{
-    graphemes::ensure_grapheme_boundary_next_byte,
     ropey::RopeSlice,
     syntax::{Highlight, HighlightEvent},
 };
@@ -150,21 +149,6 @@ impl DocumentElement {
         .element
     }
 
-    fn viewport_byte_range(
-        text: helix_core::RopeSlice,
-        row: usize,
-        height: u16,
-    ) -> std::ops::Range<usize> {
-        // Calculate viewport byte ranges:
-        // Saturating subs to make it inclusive zero indexing.
-        let last_line = text.len_lines().saturating_sub(1);
-        let last_visible_line = (row + height as usize).saturating_sub(1).min(last_line);
-        let start = text.line_to_byte(row.min(last_line));
-        let end = text.line_to_byte(last_visible_line + 1);
-
-        start..end
-    }
-
     // These 2 methods are just proxies for EditorView
     // TODO: make a PR to helix to extract them from helix_term into helix_view or smth.
     fn doc_syntax_highlights<'d>(
@@ -192,6 +176,41 @@ impl DocumentElement {
             cursor_shape_config,
             is_window_focused,
         )
+    }
+
+    fn overlay_highlights(
+        mode: helix_view::document::Mode,
+        doc: &Document,
+        view: &View,
+        theme: &Theme,
+        cursor_shape_config: &helix_view::editor::CursorShapeConfig,
+        is_window_focused: bool,
+        is_view_focused: bool,
+    ) -> impl Iterator<Item = HighlightEvent> {
+        let mut overlay_highlights =
+            EditorView::empty_highlight_iter(doc, view.offset.anchor, view.inner_area(doc).height);
+        if is_view_focused {
+            let highlights = helix_core::syntax::merge(
+                overlay_highlights,
+                Self::doc_selection_highlights(
+                    mode,
+                    doc,
+                    view,
+                    theme,
+                    cursor_shape_config,
+                    is_window_focused,
+                ),
+            );
+            let focused_view_elements =
+                EditorView::highlight_focused_view_elements(view, doc, theme);
+            if focused_view_elements.is_empty() {
+                overlay_highlights = Box::new(highlights)
+            } else {
+                overlay_highlights =
+                    Box::new(helix_core::syntax::merge(highlights, focused_view_elements))
+            }
+        }
+        overlay_highlights
     }
 
     fn highlights_from_iter(iter: impl Iterator<Item = HighlightEvent>) -> Highlights {
@@ -249,13 +268,6 @@ pub struct DocumentLayout {
 }
 
 struct RopeWrapper<'a>(RopeSlice<'a>);
-
-impl<'a> RopeWrapper<'a> {
-    fn len(&self) -> usize {
-        // should this be bytes or chars?
-        self.0.len_chars()
-    }
-}
 
 impl<'a> Into<SharedString> for RopeWrapper<'a> {
     fn into(self) -> SharedString {
@@ -430,6 +442,17 @@ impl Element for DocumentElement {
                 let text_view = text.slice(anchor..end_char);
                 let str: SharedString = RopeWrapper(text_view).into();
 
+                let overlay_highlights = Self::overlay_highlights(
+                    editor.mode(),
+                    document,
+                    view,
+                    theme,
+                    &editor.config().cursor_shape,
+                    true,
+                    self.is_focused,
+                )
+                .collect::<Vec<_>>();
+                println!("SELECTION HIGHLIGHTS {:?}", overlay_highlights);
                 // TODO: refactor all highlighting into separate function
                 let highlights = Self::syntax_highlights(
                     document,
