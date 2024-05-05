@@ -101,9 +101,7 @@ impl Workspace {
     }
 
     pub fn theme(editor: &Model<EditorModel>, cx: &mut ViewContext<Self>) -> helix_view::Theme {
-        let editor = editor.read(cx);
-        let editor = editor.lock();
-        editor.theme.clone()
+        editor.read(cx).theme()
     }
 
     pub fn handle_event(&mut self, ev: &crate::Update, cx: &mut ViewContext<Self>) {

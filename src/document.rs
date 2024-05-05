@@ -6,6 +6,7 @@ use helix_core::{
     ropey::RopeSlice,
     syntax::{Highlight, HighlightEvent},
 };
+use helix_term::ui::EditorView;
 use helix_view::{graphics::CursorKind, Document, DocumentId, Editor, Theme, View, ViewId};
 use log::{debug, info};
 
@@ -164,57 +165,67 @@ impl DocumentElement {
         start..end
     }
 
-    fn syntax_highlights(doc: &helix_view::Document, anchor: usize, height: u16) -> Highlights {
-        let text = doc.text().slice(..);
-        let row = text.char_to_line(anchor.min(text.len_chars()));
-        let range = Self::viewport_byte_range(text, row, height);
+    // These 2 methods are just proxies for EditorView
+    // TODO: make a PR to helix to extract them from helix_term into helix_view or smth.
+    fn doc_syntax_highlights<'d>(
+        doc: &'d helix_view::Document,
+        anchor: usize,
+        height: u16,
+        theme: &Theme,
+    ) -> Box<dyn Iterator<Item = HighlightEvent> + 'd> {
+        EditorView::doc_syntax_highlights(doc, anchor, height, theme)
+    }
 
-        match doc.syntax() {
-            Some(syn) => {
-                let iter = syn
-                    // TODO: range doesn't actually restrict source, just highlight range
-                    .highlight_iter(text.slice(..), Some(range), None)
-                    .map(|event| event.unwrap())
-                    .map(move |event| match event {
-                        // TODO: use byte slices directly
-                        // convert byte offsets to char offset
-                        HighlightEvent::Source { start, end } => {
-                            let start =
-                                text.byte_to_char(ensure_grapheme_boundary_next_byte(text, start));
-                            let end =
-                                text.byte_to_char(ensure_grapheme_boundary_next_byte(text, end));
-                            HighlightEvent::Source { start, end }
-                        }
-                        event => event,
-                    });
-                let mut regions = vec![];
-                let mut current_region = HighlightRegion {
-                    start: 0,
-                    end: 0,
-                    hl: Highlight(0),
-                };
-                for event in iter {
-                    match event {
-                        HighlightEvent::HighlightStart(highlight) => {
-                            current_region.hl = highlight;
-                        }
-                        HighlightEvent::Source { start, end } => {
-                            current_region.start = start;
-                            current_region.end = end;
-                        }
-                        HighlightEvent::HighlightEnd => {
-                            regions.push(current_region);
-                        }
-                    }
+    fn doc_selection_highlights(
+        mode: helix_view::document::Mode,
+        doc: &Document,
+        view: &View,
+        theme: &Theme,
+        cursor_shape_config: &helix_view::editor::CursorShapeConfig,
+        is_window_focused: bool,
+    ) -> Vec<(usize, std::ops::Range<usize>)> {
+        EditorView::doc_selection_highlights(
+            mode,
+            doc,
+            view,
+            theme,
+            cursor_shape_config,
+            is_window_focused,
+        )
+    }
+
+    fn highlights_from_iter(iter: impl Iterator<Item = HighlightEvent>) -> Highlights {
+        let mut regions = vec![];
+        let mut current_region = HighlightRegion {
+            start: 0,
+            end: 0,
+            hl: Highlight(0),
+        };
+        for event in iter {
+            match event {
+                HighlightEvent::HighlightStart(highlight) => {
+                    current_region.hl = highlight;
                 }
-                Highlights(regions)
+                HighlightEvent::Source { start, end } => {
+                    current_region.start = start;
+                    current_region.end = end;
+                }
+                HighlightEvent::HighlightEnd => {
+                    regions.push(current_region);
+                }
             }
-            None => Highlights(vec![HighlightRegion {
-                start: text.byte_to_char(range.start),
-                end: text.byte_to_char(range.end),
-                hl: Highlight(0),
-            }]),
         }
+        regions.push(current_region);
+        Highlights(regions)
+    }
+
+    fn syntax_highlights(
+        doc: &helix_view::Document,
+        anchor: usize,
+        height: u16,
+        theme: &Theme,
+    ) -> Highlights {
+        Self::highlights_from_iter(Self::doc_syntax_highlights(doc, anchor, height, theme))
     }
 }
 
@@ -238,6 +249,13 @@ pub struct DocumentLayout {
 }
 
 struct RopeWrapper<'a>(RopeSlice<'a>);
+
+impl<'a> RopeWrapper<'a> {
+    fn len(&self) -> usize {
+        // should this be bytes or chars?
+        self.0.len_chars()
+    }
+}
 
 impl<'a> Into<SharedString> for RopeWrapper<'a> {
     fn into(self) -> SharedString {
@@ -417,6 +435,7 @@ impl Element for DocumentElement {
                     document,
                     anchor,
                     total_lines.min(after_layout.rows + 1) as u16,
+                    theme,
                 );
                 let regions = highlights.get(anchor, end_char);
 
@@ -426,6 +445,19 @@ impl Element for DocumentElement {
 
                 for reg in regions {
                     let HighlightRegion { start, end, hl } = *reg;
+                    if str.len() == end - start {
+                        // this region covers everything, just emit it
+                        let run = TextRun {
+                            len: end - start,
+                            font: self.style.font(),
+                            color: fg_color,
+                            background_color: Some(bg_color),
+                            underline: None,
+                            strikethrough: None,
+                        };
+                        runs.push(run);
+                        break;
+                    }
 
                     if let Some(prev) = previous_region {
                         if prev.start == start && prev.end == end {
@@ -541,7 +573,6 @@ impl Element for DocumentElement {
                         lines: Vec::new(),
                         style: self.style.clone(),
                         origin: bounds.origin,
-                        view_id: self.view_id,
                     };
                     {
                         let mut gutters = Vec::new();
@@ -573,7 +604,6 @@ struct Gutter<'a> {
     lines: Vec<(Point<Pixels>, ShapedLine)>,
     style: TextStyle,
     origin: Point<Pixels>,
-    view_id: ViewId,
 }
 
 impl<'a> Gutter<'a> {
