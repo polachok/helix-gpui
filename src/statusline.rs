@@ -1,12 +1,11 @@
-use std::sync::{Arc, Mutex};
-
 use crate::utils::color_to_hsla;
+use crate::EditorModel;
 use gpui::*;
-use helix_view::{DocumentId, Editor, ViewId};
+use helix_view::{DocumentId, ViewId};
 
 #[derive(IntoElement)]
 pub struct StatusLine {
-    editor: Model<Arc<Mutex<Editor>>>,
+    editor: Model<EditorModel>,
     doc_id: DocumentId,
     view_id: ViewId,
     focused: bool,
@@ -15,7 +14,7 @@ pub struct StatusLine {
 
 impl StatusLine {
     pub fn new(
-        editor: Model<Arc<Mutex<Editor>>>,
+        editor: Model<EditorModel>,
         doc_id: DocumentId,
         view_id: ViewId,
         focused: bool,
@@ -31,7 +30,7 @@ impl StatusLine {
     }
 
     fn style(&self, cx: &mut WindowContext<'_>) -> (Hsla, Hsla) {
-        let editor = self.editor.read(cx).lock().unwrap();
+        let editor = self.editor.read(cx).lock();
         let base_style = if self.focused {
             editor.theme.get("ui.statusline")
         } else {
@@ -55,7 +54,7 @@ impl StatusLine {
         base_bg: Hsla,
     ) -> (StyledText, StyledText, StyledText) {
         use self::copy_pasta::{render_status_parts, RenderContext};
-        let editor = self.editor.read(cx).lock().unwrap();
+        let editor = self.editor.read(cx).lock();
         let doc = editor.document(self.doc_id).unwrap();
         let view = editor.tree.get(self.view_id);
 

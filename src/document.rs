@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::sync::{Arc, Mutex};
 
 use gpui::*;
 use helix_core::{
@@ -11,9 +10,10 @@ use helix_view::{graphics::CursorKind, Document, DocumentId, Editor, Theme, View
 use log::{debug, info};
 
 use crate::utils::color_to_hsla;
+use crate::EditorModel;
 
 pub struct DocumentView {
-    editor: Model<Arc<Mutex<Editor>>>,
+    editor: Model<EditorModel>,
     view_id: ViewId,
     style: TextStyle,
     focus: FocusHandle,
@@ -22,7 +22,7 @@ pub struct DocumentView {
 
 impl DocumentView {
     pub fn new(
-        editor: Model<Arc<Mutex<Editor>>>,
+        editor: Model<EditorModel>,
         view_id: ViewId,
         style: TextStyle,
         focus: &FocusHandle,
@@ -71,7 +71,7 @@ impl Render for DocumentView {
         .detach();
 
         let doc_id = {
-            let editor = self.editor.read(cx).lock().unwrap();
+            let editor = self.editor.read(cx).lock();
             let view = editor.tree.get(self.view_id);
             view.doc
         };
@@ -110,7 +110,7 @@ impl FocusableView for DocumentView {
 }
 
 pub struct DocumentElement {
-    editor: Model<Arc<Mutex<Editor>>>,
+    editor: Model<EditorModel>,
     doc_id: DocumentId,
     view_id: ViewId,
     style: TextStyle,
@@ -129,7 +129,7 @@ impl IntoElement for DocumentElement {
 
 impl DocumentElement {
     pub fn new(
-        editor: Model<Arc<Mutex<Editor>>>,
+        editor: Model<EditorModel>,
         doc_id: DocumentId,
         view_id: ViewId,
         style: TextStyle,
@@ -294,7 +294,7 @@ impl Element for DocumentElement {
                             width: columns as u16,
                             height: rows as u16,
                         };
-                        let mut editor = editor.lock().unwrap();
+                        let mut editor = editor.lock();
                         editor.resize(rect)
                     });
                     DocumentLayout {
@@ -342,7 +342,7 @@ impl Element for DocumentElement {
 
                 // println!("{:?}", line_count);
                 editor.update(cx, |editor, _cx| {
-                    let mut editor = editor.lock().unwrap();
+                    let mut editor = editor.lock();
                     let mut ctx = helix_term::commands::Context {
                         editor: &mut editor,
                         register: None,
@@ -365,7 +365,7 @@ impl Element for DocumentElement {
             .paint(bounds, after_layout.hitbox.as_ref(), cx, |_, cx| {
                 let editor = self.editor.read(cx);
                 let editor = editor.clone();
-                let editor = editor.lock().unwrap();
+                let editor = editor.lock();
 
                 let view = editor.tree.get(self.view_id);
                 let _viewport = view.area;
@@ -522,7 +522,7 @@ impl Element for DocumentElement {
                 // draw gutter
                 {
                     let editor = self.editor.read(cx).clone();
-                    let editor = editor.lock().unwrap();
+                    let editor = editor.lock();
                     let theme = &editor.theme;
                     let view = editor.tree.get(self.view_id);
                     let document = editor.document(self.doc_id).unwrap();

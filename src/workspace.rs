@@ -1,11 +1,10 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use helix_term::compositor::Compositor;
 use helix_term::ui::EditorView;
-use helix_view::{Editor, ViewId};
+use helix_view::ViewId;
 use log::{debug, info};
 
 use crate::document::DocumentView;
@@ -16,7 +15,7 @@ use crate::prompt::{Prompt, PromptElement};
 use crate::EditorModel;
 
 pub struct Workspace {
-    editor: Model<Arc<Mutex<Editor>>>,
+    editor: Model<EditorModel>,
     view: Model<EditorView>,
     documents: HashMap<ViewId, View<DocumentView>>,
     compositor: Model<Compositor>,
@@ -30,7 +29,7 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new(
-        editor: Model<Arc<Mutex<Editor>>>,
+        editor: Model<EditorModel>,
         view: Model<EditorView>,
         compositor: Model<Compositor>,
         handle: tokio::runtime::Handle,
@@ -101,12 +100,9 @@ impl Workspace {
         info
     }
 
-    pub fn theme(
-        editor: &Model<Arc<Mutex<Editor>>>,
-        cx: &mut ViewContext<Self>,
-    ) -> helix_view::Theme {
+    pub fn theme(editor: &Model<EditorModel>, cx: &mut ViewContext<Self>) -> helix_view::Theme {
         let editor = editor.read(cx);
-        let editor = editor.lock().unwrap();
+        let editor = editor.lock();
         editor.theme.clone()
     }
 
@@ -144,9 +140,8 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
-        let editor = self.editor.read(cx);
-        let editor = editor.clone();
-        let editor = editor.lock().unwrap();
+        let editor = self.editor.read(cx).clone();
+        let editor = editor.lock();
 
         let default_style = editor.theme.get("ui.background");
         let default_ui_text = editor.theme.get("ui.text");
@@ -166,7 +161,7 @@ impl Render for Workspace {
 
             if is_focused {
                 focused_view_id = Some(view_id);
-                focused_file_name = doc.path();
+                focused_file_name = doc.path().map(|p| p.display().to_string());
             }
 
             let style = TextStyle {
@@ -187,6 +182,7 @@ impl Render for Workspace {
                 })
             });
         }
+        drop(editor);
         // TODO: remove views that are not in the tree
 
         let mut docs = vec![];
@@ -207,7 +203,7 @@ impl Render for Workspace {
                 .font("SF Pro")
                 .text_color(text_color)
                 .text_size(px(12.))
-                .child(format!("{} - Helix", path.display()))
+                .child(format!("{} - Helix", path))
         } else {
             div().flex()
         };
@@ -268,9 +264,9 @@ impl Render for Workspace {
 
                 editor.update(cx, |editor, cx| {
                     let _guard = rt_handle.enter();
-                    let mut editor = editor.lock().unwrap();
 
                     let is_handled = compositor.update(cx, |compositor, cx| {
+                        let mut editor = editor.lock();
                         let mut comp_ctx = helix_term::compositor::Context {
                             editor: &mut editor,
                             scroll: None,
@@ -300,6 +296,8 @@ impl Render for Workspace {
                         use crate::picker::Picker as PickerComponent;
                         use helix_term::ui::{overlay::Overlay, Picker};
                         use std::path::PathBuf;
+                        let mut editor = editor.lock();
+
                         let picker = if let Some(p) = compositor
                             .find_id::<Overlay<Picker<PathBuf>>>(helix_term::ui::picker::ID)
                         {
@@ -324,12 +322,12 @@ impl Render for Workspace {
                         cx.emit(crate::Update::Prompt(prompt));
                     }
 
-                    if let Some(info) = editor.autoinfo.take() {
+                    if let Some(info) = editor.lock().autoinfo.take() {
                         cx.emit(crate::Update::Info(info));
                     }
 
                     if let Some(view_id) = focused_view_id {
-                        editor.ensure_cursor_in_view(view_id);
+                        editor.lock().ensure_cursor_in_view(view_id);
                     }
                     drop(_guard);
                 });
@@ -384,7 +382,7 @@ impl Render for Workspace {
     }
 }
 
-fn open(editor: Model<Arc<Mutex<Editor>>>, handle: tokio::runtime::Handle, cx: &mut WindowContext) {
+fn open(editor: Model<EditorModel>, handle: tokio::runtime::Handle, cx: &mut WindowContext) {
     let path = cx.prompt_for_paths(PathPromptOptions {
         files: true,
         directories: false,
@@ -398,7 +396,7 @@ fn open(editor: Model<Arc<Mutex<Editor>>>, handle: tokio::runtime::Handle, cx: &
                 editor.update(cx, move |editor, _cx| {
                     let path = &path[0];
                     let _guard = handle.enter();
-                    let mut editor = editor.lock().unwrap();
+                    let mut editor = editor.lock();
                     editor.open(path, Action::Replace).unwrap();
                 })
             })
@@ -408,9 +406,9 @@ fn open(editor: Model<Arc<Mutex<Editor>>>, handle: tokio::runtime::Handle, cx: &
     .detach();
 }
 
-fn quit(editor: Model<Arc<Mutex<Editor>>>, rt: tokio::runtime::Handle, cx: &mut WindowContext) {
+fn quit(editor: Model<EditorModel>, rt: tokio::runtime::Handle, cx: &mut WindowContext) {
     editor.update(cx, |editor, _cx| {
-        let mut editor = editor.lock().unwrap();
+        let mut editor = editor.lock();
         let _guard = rt.enter();
         rt.block_on(async { editor.flush_writes().await }).unwrap();
         let views: Vec<_> = editor.tree.views().map(|(view, _)| view.id).collect();

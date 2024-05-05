@@ -23,7 +23,20 @@ mod statusline;
 mod utils;
 mod workspace;
 
-pub type EditorModel = Arc<Mutex<Editor>>;
+#[derive(Clone)]
+pub struct EditorModel {
+    inner: Arc<Mutex<Editor>>,
+}
+
+impl EditorModel {
+    pub fn lock(&self) -> std::sync::MutexGuard<Editor> {
+        self.inner.lock().unwrap()
+    }
+
+    pub fn try_lock(&self) -> Option<std::sync::MutexGuard<Editor>> {
+        self.inner.try_lock().ok()
+    }
+}
 
 fn setup_logging(verbosity: u64) -> Result<()> {
     let mut base_config = fern::Dispatch::new();
@@ -118,14 +131,16 @@ pub enum Update {
     EditorEvent(helix_view::editor::EditorEvent),
 }
 
-impl gpui::EventEmitter<Update> for Arc<Mutex<Editor>> {}
+impl gpui::EventEmitter<Update> for EditorModel {}
 
 fn gui_main(app: Application, handle: tokio::runtime::Handle) {
     App::new().run(|cx: &mut AppContext| {
         let options = window_options(cx);
 
         cx.open_window(options, |cx| {
-            let editor = Arc::new(Mutex::new(app.editor));
+            let editor = EditorModel {
+                inner: Arc::new(Mutex::new(app.editor)),
+            };
             let editor_1 = editor.clone();
 
             let editor = cx.new_model(|_mc| editor);
@@ -142,16 +157,17 @@ fn gui_main(app: Application, handle: tokio::runtime::Handle) {
                     let editor = editor_1.clone();
                     let _guard = handle_1.enter();
                     loop {
-                        use tokio::time::timeout;
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                        let mut editor = editor.lock().unwrap();
-                        if let Ok(event) =
-                            timeout(Duration::from_millis(50), editor.wait_event()).await
-                        {
-                            drop(editor);
-                            let _ = cx.update_model(&model, |_, cx| {
-                                cx.emit(Update::EditorEvent(event));
-                            });
+                        use futures_util::future::FutureExt;
+                        cx.background_executor()
+                            .timer(Duration::from_millis(100))
+                            .await;
+                        if let Some(mut editor) = editor.try_lock() {
+                            if let Some(event) = editor.wait_event().now_or_never() {
+                                drop(editor);
+                                let _ = cx.update_model(&model, |_, cx| {
+                                    cx.emit(Update::EditorEvent(event));
+                                });
+                            }
                         }
                     }
                 }
