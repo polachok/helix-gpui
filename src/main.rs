@@ -36,6 +36,11 @@ impl EditorModel {
     pub fn try_lock(&self) -> Option<std::sync::MutexGuard<Editor>> {
         self.inner.try_lock().ok()
     }
+
+    pub fn theme(&self) -> helix_view::Theme {
+        let editor = self.lock();
+        editor.theme.clone()
+    }
 }
 
 fn setup_logging(verbosity: u64) -> Result<()> {
