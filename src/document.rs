@@ -7,7 +7,7 @@ use helix_core::{
 };
 use helix_term::ui::EditorView;
 use helix_view::{graphics::CursorKind, Document, DocumentId, Editor, Theme, View, ViewId};
-use log::{debug, info};
+use log::debug;
 
 use crate::utils::color_to_hsla;
 use crate::EditorModel;
@@ -213,38 +213,111 @@ impl DocumentElement {
         overlay_highlights
     }
 
-    fn highlights_from_iter(iter: impl Iterator<Item = HighlightEvent>) -> Highlights {
-        let mut regions = vec![];
-        let mut current_region = HighlightRegion {
-            start: 0,
-            end: 0,
-            hl: Highlight(0),
+    fn highlight(
+        editor: &Editor,
+        doc: &Document,
+        view: &View,
+        theme: &Theme,
+        is_view_focused: bool,
+        anchor: usize,
+        lines: u16,
+        end_char: usize,
+        fg_color: Hsla,
+        font: Font,
+    ) -> Vec<TextRun> {
+        let mut runs = vec![];
+        let overlay_highlights = Self::overlay_highlights(
+            editor.mode(),
+            doc,
+            view,
+            theme,
+            &editor.config().cursor_shape,
+            true,
+            is_view_focused,
+        );
+        let syntax_highlights = Self::doc_syntax_highlights(doc, anchor, lines, theme);
+
+        let mut syntax_styles = StyleIter {
+            text_style: helix_view::graphics::Style::default(),
+            active_highlights: Vec::with_capacity(64),
+            highlight_iter: syntax_highlights,
+            theme,
         };
-        for event in iter {
-            match event {
-                HighlightEvent::HighlightStart(highlight) => {
-                    current_region.hl = highlight;
+
+        let mut overlay_styles = StyleIter {
+            text_style: helix_view::graphics::Style::default(),
+            active_highlights: Vec::with_capacity(64),
+            highlight_iter: overlay_highlights,
+            theme,
+        };
+
+        let mut syntax_span =
+            syntax_styles
+                .next()
+                .unwrap_or((helix_view::graphics::Style::default(), 0, usize::MAX));
+        let mut overlay_span = overlay_styles.next().unwrap_or((
+            helix_view::graphics::Style::default(),
+            0,
+            usize::MAX,
+        ));
+
+        let mut position = anchor;
+        loop {
+            let (syn_style, syn_start, syn_end) = syntax_span;
+            let (ovl_style, ovl_start, ovl_end) = overlay_span;
+
+            /* if we are between highlights, insert default style */
+            let (style, is_default) = if position < syn_start && position < ovl_start {
+                (helix_view::graphics::Style::default(), true)
+            } else {
+                let mut style = helix_view::graphics::Style::default();
+                if position >= syn_start && position < syn_end {
+                    style = style.patch(syn_style);
                 }
-                HighlightEvent::Source { start, end } => {
-                    current_region.start = start;
-                    current_region.end = end;
+                if position >= ovl_start && position < ovl_end {
+                    style = style.patch(ovl_style);
                 }
-                HighlightEvent::HighlightEnd => {
-                    regions.push(current_region);
-                }
+                (style, false)
+            };
+
+            let fg = style
+                .fg
+                .and_then(|fg| color_to_hsla(fg))
+                .unwrap_or(fg_color);
+            let bg = style.bg.and_then(|bg| color_to_hsla(bg));
+            let len = if is_default {
+                std::cmp::min(syn_start, ovl_start) - position
+            } else {
+                std::cmp::min(
+                    syn_end.checked_sub(position).unwrap_or(usize::MAX),
+                    ovl_end.checked_sub(position).unwrap_or(usize::MAX),
+                )
+            };
+
+            let len = std::cmp::min(len, end_char);
+
+            let run = TextRun {
+                len,
+                font: font.clone(),
+                color: fg,
+                background_color: bg,
+                underline: None,
+                strikethrough: None,
+            };
+            runs.push(run);
+            position += len;
+
+            if position >= end_char {
+                break;
+            }
+            if position >= syn_end {
+                syntax_span = syntax_styles.next().unwrap_or((style, 0, usize::MAX));
+            }
+            if position >= ovl_end {
+                overlay_span = overlay_styles.next().unwrap_or((style, 0, usize::MAX));
             }
         }
-        regions.push(current_region);
-        Highlights(regions)
-    }
-
-    fn syntax_highlights(
-        doc: &helix_view::Document,
-        anchor: usize,
-        height: u16,
-        theme: &Theme,
-    ) -> Highlights {
-        Self::highlights_from_iter(Self::doc_syntax_highlights(doc, anchor, height, theme))
+        runs
     }
 }
 
@@ -442,93 +515,18 @@ impl Element for DocumentElement {
                 let text_view = text.slice(anchor..end_char);
                 let str: SharedString = RopeWrapper(text_view).into();
 
-                let overlay_highlights = Self::overlay_highlights(
-                    editor.mode(),
+                let runs = Self::highlight(
+                    &editor,
                     document,
                     view,
                     theme,
-                    &editor.config().cursor_shape,
-                    true,
                     self.is_focused,
-                )
-                .collect::<Vec<_>>();
-                println!("SELECTION HIGHLIGHTS {:?}", overlay_highlights);
-                // TODO: refactor all highlighting into separate function
-                let highlights = Self::syntax_highlights(
-                    document,
                     anchor,
                     total_lines.min(after_layout.rows + 1) as u16,
-                    theme,
+                    end_char,
+                    fg_color,
+                    self.style.font(),
                 );
-                let regions = highlights.get(anchor, end_char);
-
-                let mut runs = vec![];
-                let mut previous_end = anchor;
-                let mut previous_region: Option<HighlightRegion> = None;
-
-                for reg in regions {
-                    let HighlightRegion { start, end, hl } = *reg;
-                    if str.len() == end - start {
-                        // this region covers everything, just emit it
-                        let run = TextRun {
-                            len: end - start,
-                            font: self.style.font(),
-                            color: fg_color,
-                            background_color: Some(bg_color),
-                            underline: None,
-                            strikethrough: None,
-                        };
-                        runs.push(run);
-                        break;
-                    }
-
-                    if let Some(prev) = previous_region {
-                        if prev.start == start && prev.end == end {
-                            info!(
-                                "replacing previous region {:?} with new region {:?}",
-                                reg, prev
-                            );
-                            runs.pop();
-                        }
-                    }
-
-                    if start > end_char || previous_end > end_char {
-                        break;
-                    }
-
-                    // if previous run didn't end at the start of this region
-                    // we have to insert default run
-                    if start > previous_end {
-                        let len = start - previous_end;
-
-                        let run = TextRun {
-                            len,
-                            font: self.style.font(),
-                            color: fg_color,
-                            background_color: Some(bg_color),
-                            underline: None,
-                            strikethrough: None,
-                        };
-                        runs.push(run);
-                    }
-
-                    let style = theme.highlight(hl.0);
-                    let fg = style.fg.and_then(|fg| color_to_hsla(fg));
-                    //let bg = style.fg.map(|fg| color_to_hsla(fg));
-                    let len = end - start;
-                    let run = TextRun {
-                        len,
-                        font: self.style.font(),
-                        color: fg.unwrap_or(fg_color),
-                        background_color: Some(bg_color),
-                        underline: None,
-                        strikethrough: None,
-                    };
-                    runs.push(run);
-                    previous_end = end;
-                    previous_region = Some(*reg);
-                }
-
                 drop(editor);
                 let shaped_lines = cx
                     .text_system()
@@ -771,29 +769,6 @@ impl Cursor {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-struct HighlightRegion {
-    start: usize,
-    end: usize,
-    hl: Highlight,
-}
-
-#[derive(Debug)]
-struct Highlights(Vec<HighlightRegion>);
-
-impl Highlights {
-    fn get(&self, start: usize, end: usize) -> Vec<&HighlightRegion> {
-        let mut highlights = vec![];
-        for region in &self.0 {
-            if region.start >= end || region.end <= start {
-                continue;
-            }
-            highlights.push(region);
-        }
-        highlights
-    }
-}
-
 type GutterDecoration<'a, T> = Box<dyn FnMut(LinePos, &mut T) + 'a>;
 
 trait GutterRenderer {
@@ -821,4 +796,47 @@ struct LinePos {
     /// a very long inline virtual text then this index will point
     /// at the next (non-virtual) char after this visual line
     pub start_char_idx: usize,
+}
+
+// TODO: copy-pasted from helix_term ui/document.rs
+
+/// A wrapper around a HighlightIterator
+/// that merges the layered highlights to create the final text style
+/// and yields the active text style and the char_idx where the active
+/// style will have to be recomputed.
+struct StyleIter<'a, H: Iterator<Item = HighlightEvent>> {
+    text_style: helix_view::graphics::Style,
+    active_highlights: Vec<Highlight>,
+    highlight_iter: H,
+    theme: &'a Theme,
+}
+
+impl<H: Iterator<Item = HighlightEvent>> Iterator for StyleIter<'_, H> {
+    type Item = (helix_view::graphics::Style, usize, usize);
+
+    fn next(&mut self) -> Option<(helix_view::graphics::Style, usize, usize)> {
+        while let Some(event) = self.highlight_iter.next() {
+            match event {
+                HighlightEvent::HighlightStart(highlights) => {
+                    self.active_highlights.push(highlights)
+                }
+                HighlightEvent::HighlightEnd => {
+                    self.active_highlights.pop();
+                }
+                HighlightEvent::Source { start, end } => {
+                    if start == end {
+                        continue;
+                    }
+                    let style = self
+                        .active_highlights
+                        .iter()
+                        .fold(self.text_style, |acc, span| {
+                            acc.patch(self.theme.highlight(span.0))
+                        });
+                    return Some((style, start, end));
+                }
+            }
+        }
+        None
+    }
 }
