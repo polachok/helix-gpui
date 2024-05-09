@@ -143,7 +143,8 @@ impl NotificationView {
                                 .await;
                             this.update(&mut cx, |this, cx| {
                                 if this.lsp_status.contains_key(&id) {
-                                    cx.notify();
+                                    // TODO: this call causes workspace redraw for some reason
+                                    //cx.notify();
                                 }
                             })
                             .ok();

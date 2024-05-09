@@ -17,6 +17,7 @@ mod application;
 mod document;
 mod info_box;
 mod notification;
+mod overlay;
 mod picker;
 mod prompt;
 mod statusline;

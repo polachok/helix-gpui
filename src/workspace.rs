@@ -10,8 +10,8 @@ use log::{debug, info};
 use crate::document::DocumentView;
 use crate::info_box::InfoBoxView;
 use crate::notification::NotificationView;
-use crate::picker::{Picker, PickerElement};
-use crate::prompt::{Prompt, PromptElement};
+use crate::overlay::OverlayView;
+use crate::prompt::Prompt;
 use crate::EditorModel;
 
 pub struct Workspace {
@@ -20,8 +20,7 @@ pub struct Workspace {
     documents: HashMap<ViewId, View<DocumentView>>,
     compositor: Model<Compositor>,
     handle: tokio::runtime::Handle,
-    prompt: Option<Prompt>,
-    picker: Option<Picker>,
+    overlay: View<OverlayView>,
     info: View<InfoBoxView>,
     info_hidden: bool,
     notifications: View<NotificationView>,
@@ -37,14 +36,18 @@ impl Workspace {
     ) -> Self {
         let notifications = Self::init_notifications(&editor, cx);
         let info = Self::init_info_box(&editor, cx);
+        let overlay = cx.new_view(|cx| {
+            let view = OverlayView::new(&cx.focus_handle());
+            view.subscribe(&editor, cx);
+            view
+        });
 
         Self {
             editor,
             view,
             compositor,
             handle,
-            prompt: None,
-            picker: None,
+            overlay,
             info,
             info_hidden: true,
             documents: HashMap::default(),
@@ -121,11 +124,9 @@ impl Workspace {
                 cx.notify();
             }
             crate::Update::Prompt(prompt) => {
-                self.prompt = Some(prompt.clone());
                 cx.notify();
             }
             crate::Update::Picker(picker) => {
-                self.picker = Some(picker.clone());
                 cx.notify();
             }
             crate::Update::Info(_) => {
@@ -215,35 +216,6 @@ impl Render for Workspace {
             .child(label);
 
         println!("rendering workspace");
-
-        let has_prompt = self.prompt.is_some();
-        let has_picker = self.picker.is_some();
-        let has_overlay = has_prompt || has_picker;
-        let overlay = div().absolute().size_full().bottom_0().left_0().child(
-            div()
-                .flex()
-                .h_full()
-                .justify_center()
-                .items_center()
-                .when(has_prompt, |this| {
-                    let handle = cx.focus_handle();
-                    let prompt = PromptElement {
-                        prompt: self.prompt.take().unwrap(),
-                        focus: handle.clone(),
-                    };
-                    handle.focus(cx);
-                    this.child(prompt)
-                })
-                .when(has_picker, |this| {
-                    let handle = cx.focus_handle();
-                    let picker = PickerElement {
-                        picker: self.picker.take().unwrap(),
-                        focus: handle.clone(),
-                    };
-                    handle.focus(cx);
-                    this.child(picker)
-                }),
-        );
 
         let editor = self.editor.clone();
         let compositor = self.compositor.clone();
@@ -367,11 +339,15 @@ impl Render for Workspace {
             .focusable()
             .child(top_bar)
             .children(docs)
-            .when(has_overlay, move |this| this.child(overlay))
             .child(self.notifications.clone())
+            .when(!self.overlay.read(cx).is_empty(), |this| {
+                let view = &self.overlay;
+                cx.focus_view(&view);
+                this.child(view.clone())
+            })
             .when(
                 !self.info_hidden && !self.info.read(cx).is_empty(),
-                move |this| {
+                |this| {
                     let info = &self.info;
                     cx.focus_view(&info);
                     this.child(info.clone())

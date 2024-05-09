@@ -49,7 +49,7 @@ impl RenderOnce for PickerElement {
         default_style.font_size = px(12.).into();
         default_style.background_color = bg_color;
 
-        println!("picker: {:?}", self.picker.0);
+        // println!("picker: {:?}", self.picker.0);
         let text = self.picker.0.into_styled_text(&default_style);
         cx.focus(&self.focus);
         div()
