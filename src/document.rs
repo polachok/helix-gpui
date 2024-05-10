@@ -41,6 +41,7 @@ impl DocumentView {
 impl Render for DocumentView {
     fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
         println!("{:?}: rendering document view", self.view_id);
+        let editor = self.editor.clone();
 
         cx.on_focus_out(&self.focus, |this, cx| {
             let is_focused = this.focus.is_focused(cx);
@@ -76,6 +77,7 @@ impl Render for DocumentView {
             view.doc
         };
 
+        let handle = ScrollHandle::default();
         let doc = DocumentElement::new(
             self.editor.clone(),
             doc_id.clone(),
@@ -83,7 +85,43 @@ impl Render for DocumentView {
             self.style.clone(),
             &self.focus,
             self.is_focused,
-        );
+        )
+        .overflow_y_scroll()
+        .track_scroll(&handle)
+        .on_scroll_wheel(cx.listener(move |v, ev: &ScrollWheelEvent, cx| {
+            let view_id = v.view_id;
+            let line_height = v.style.line_height_in_pixels(cx.rem_size());
+            use helix_core::movement::Direction;
+
+            debug!("SCROLL WHEEL {:?}", ev);
+            let delta = ev.delta.pixel_delta(line_height);
+            if delta.y != px(0.) {
+                let lines = delta.y / line_height;
+                let direction = if lines > 0. {
+                    Direction::Backward
+                } else {
+                    Direction::Forward
+                };
+                let line_count = 1 + lines.abs() as usize;
+
+                // println!("{:?}", line_count);
+                editor.update(cx, |editor, _cx| {
+                    let mut editor = editor.lock();
+                    let mut ctx = helix_term::commands::Context {
+                        editor: &mut editor,
+                        register: None,
+                        count: None,
+                        callback: Vec::new(),
+                        on_next_key_callback: None,
+                        jobs: &mut helix_term::job::Jobs::new(),
+                    };
+                    helix_term::commands::scroll(&mut ctx, line_count, direction, false);
+
+                    editor.ensure_cursor_in_view(view_id);
+                });
+                cx.notify();
+            }
+        }));
 
         let status = crate::statusline::StatusLine::new(
             self.editor.clone(),
@@ -426,44 +464,8 @@ impl Element for DocumentElement {
                 cx.focus(&focus);
             });
 
-        let lh = after_layout.line_height;
-        let editor = self.editor.clone();
-        let view_id = self.view_id;
-
-        self.interactivity.on_scroll_wheel(move |ev, cx| {
-            use helix_core::movement::Direction;
-            debug!("SCROLL WHEEL {:?}", ev);
-            let delta = ev.delta.pixel_delta(lh);
-            if delta.y != px(0.) {
-                let lines = delta.y / lh;
-                let direction = if lines > 0. {
-                    Direction::Backward
-                } else {
-                    Direction::Forward
-                };
-                let line_count = 1 + lines.abs() as usize;
-
-                // println!("{:?}", line_count);
-                editor.update(cx, |editor, _cx| {
-                    let mut editor = editor.lock();
-                    let mut ctx = helix_term::commands::Context {
-                        editor: &mut editor,
-                        register: None,
-                        count: None,
-                        callback: Vec::new(),
-                        on_next_key_callback: None,
-                        jobs: &mut helix_term::job::Jobs::new(),
-                    };
-                    helix_term::commands::scroll(&mut ctx, line_count, direction, false);
-
-                    editor.ensure_cursor_in_view(view_id);
-                });
-                // TODO: this doesn't work because the view is cached, we should redraw
-                // but probably it would be better if we just implement scroll properly
-            }
-        });
-
         let is_focused = self.is_focused;
+
         self.interactivity
             .paint(bounds, after_layout.hitbox.as_ref(), cx, |_, cx| {
                 let editor = self.editor.read(cx);
