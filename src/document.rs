@@ -388,28 +388,37 @@ impl<'a> Into<SharedString> for RopeWrapper<'a> {
 }
 
 impl Element for DocumentElement {
-    type BeforeLayout = ();
+    type RequestLayoutState = ();
 
-    type AfterLayout = DocumentLayout;
+    type PrepaintState = DocumentLayout;
 
-    fn before_layout(&mut self, cx: &mut ElementContext) -> (LayoutId, Self::BeforeLayout) {
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        cx: &mut WindowContext,
+    ) -> (LayoutId, Self::RequestLayoutState) {
         let mut style = Style::default();
         style.size.width = relative(1.).into();
         style.size.height = relative(1.).into();
-        let layout_id = cx.with_element_context(|cx| cx.request_layout(&style, None));
+        let layout_id = cx.request_layout(style, []);
         (layout_id, ())
     }
 
-    fn after_layout(
+    fn prepaint(
         &mut self,
+        id: Option<&GlobalElementId>,
         bounds: Bounds<Pixels>,
-        _before_layout: &mut Self::BeforeLayout,
-        cx: &mut ElementContext,
-    ) -> Self::AfterLayout {
+        _before_layout: &mut Self::RequestLayoutState,
+        cx: &mut WindowContext,
+    ) -> Self::PrepaintState {
         debug!("editor bounds {:?}", bounds);
         let editor = self.editor.clone();
         self.interactivity
-            .after_layout(bounds, bounds.size, cx, |_, _, hitbox, cx| {
+            .prepaint(id, bounds, bounds.size, cx, |_, _, hitbox, cx| {
                 cx.with_content_mask(Some(ContentMask { bounds }), |cx| {
                     let font_id = cx.text_system().resolve_font(&self.style.font());
                     let font_size = self.style.font_size.to_pixels(cx.rem_size());
@@ -452,10 +461,11 @@ impl Element for DocumentElement {
 
     fn paint(
         &mut self,
+        id: Option<&GlobalElementId>,
         bounds: Bounds<Pixels>,
-        _: &mut Self::BeforeLayout,
-        after_layout: &mut Self::AfterLayout,
-        cx: &mut ElementContext,
+        _: &mut Self::RequestLayoutState,
+        after_layout: &mut Self::PrepaintState,
+        cx: &mut WindowContext,
     ) {
         let focus = self.focus.clone();
         self.interactivity
@@ -467,7 +477,7 @@ impl Element for DocumentElement {
         let is_focused = self.is_focused;
 
         self.interactivity
-            .paint(bounds, after_layout.hitbox.as_ref(), cx, |_, cx| {
+            .paint(id, bounds, after_layout.hitbox.as_ref(), cx, |_, cx| {
                 let editor = self.editor.read(cx);
                 let editor = editor.clone();
                 let editor = editor.lock();
@@ -757,7 +767,7 @@ impl Cursor {
         }
     }
 
-    pub fn paint(&mut self, origin: gpui::Point<Pixels>, cx: &mut ElementContext) {
+    pub fn paint(&mut self, origin: gpui::Point<Pixels>, cx: &mut WindowContext) {
         let bounds = self.bounds(origin);
 
         let cursor = fill(bounds, self.color);

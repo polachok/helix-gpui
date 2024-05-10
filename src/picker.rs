@@ -60,7 +60,7 @@ impl RenderOnce for PickerElement {
             .shadow_sm()
             .rounded_sm()
             .text_color(hsla(1., 1., 1., 1.))
-            .font("JetBrains Mono")
+            .font(cx.global::<crate::FontSettings>().fixed_font.clone())
             .text_size(px(12.))
             .line_height(px(1.3) * px(12.))
             .child(text)

@@ -161,7 +161,7 @@ impl Render for Workspace {
             }
 
             let style = TextStyle {
-                font_family: "JetBrains Mono".into(),
+                font_family: cx.global::<crate::FontSettings>().fixed_font.family.clone(),
                 font_size: px(14.0).into(),
                 ..Default::default()
             };
@@ -196,7 +196,7 @@ impl Render for Workspace {
         let label = if let Some(path) = focused_file_name {
             div()
                 .flex_shrink()
-                .font("SF Pro")
+                .font(cx.global::<crate::FontSettings>().var_font.clone())
                 .text_color(text_color)
                 .text_size(px(12.))
                 .child(format!("{} - Helix", path))

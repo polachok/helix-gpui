@@ -53,6 +53,8 @@ impl EventEmitter<DismissEvent> for InfoBoxView {}
 
 impl Render for InfoBoxView {
     fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
+        let font = cx.global::<crate::FontSettings>().fixed_font.clone();
+
         div()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|_v, _e, cx| {
@@ -68,7 +70,7 @@ impl Render for InfoBoxView {
                 div()
                     .rounded_sm()
                     .shadow_sm()
-                    .font("JetBrains Mono")
+                    .font(font)
                     .text_size(px(12.))
                     .text_color(self.style.text.color.unwrap())
                     .bg(self.style.background.as_ref().cloned().unwrap())

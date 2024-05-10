@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 
 use gpui::{prelude::FluentBuilder as _, *};
-use helix_lsp::lsp::{NumberOrString, ProgressParamsValue, WorkDoneProgress};
+use helix_lsp::{
+    lsp::{NumberOrString, ProgressParamsValue, WorkDoneProgress},
+    LanguageServerId,
+};
 use log::info;
 
 enum LspStatusEvent {
@@ -54,7 +57,7 @@ impl Notification {
 }
 
 pub struct NotificationView {
-    lsp_status: HashMap<usize, LspStatus>,
+    lsp_status: HashMap<LanguageServerId, LspStatus>,
     popup_bg_color: Hsla,
     popup_text_color: Hsla,
 }
@@ -68,7 +71,7 @@ impl NotificationView {
         }
     }
 
-    fn handle_lsp_call(&mut self, id: usize, call: &helix_lsp::Call) -> LspStatusEvent {
+    fn handle_lsp_call(&mut self, id: LanguageServerId, call: &helix_lsp::Call) -> LspStatusEvent {
         use helix_lsp::{Call, Notification};
         let mut ev = LspStatusEvent::Ignore;
 
@@ -189,7 +192,7 @@ impl Render for NotificationView {
 }
 
 impl RenderOnce for Notification {
-    fn render(mut self, _cx: &mut WindowContext) -> impl IntoElement {
+    fn render(mut self, cx: &mut WindowContext) -> impl IntoElement {
         let message = self.message.take();
         div()
             .flex()
@@ -202,7 +205,7 @@ impl RenderOnce for Notification {
             .text_color(self.text)
             .shadow_sm()
             .rounded_sm()
-            .font("JetBrains Mono")
+            .font(cx.global::<crate::FontSettings>().fixed_font.clone())
             .text_size(px(12.))
             .child(
                 div()

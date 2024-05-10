@@ -21,16 +21,16 @@ path = "src/main.rs"
 [dependencies]
 gpui = { git = "https://github.com/zed-industries/zed" }
 
-helix-stdx = { path = "../helix/helix-stdx" }
-helix-core = { path = "../helix/helix-core" }
-helix-event = { path = "../helix/helix-event" }
-helix-view = { path = "../helix/helix-view" }
-helix-lsp = { path = "../helix/helix-lsp" }
-helix-dap = { path = "../helix/helix-dap" }
-helix-vcs = { path = "../helix/helix-vcs" }
-helix-loader = { path = "../helix/helix-loader" }
-helix-term = { path = "../helix/helix-term" }
-tui = { path = "../helix/helix-tui", package = "helix-tui", default-features = false, features = ["crossterm"] }
+helix-stdx = { git = "https://github.com/helix-editor/helix" }
+helix-core = { git = "https://github.com/helix-editor/helix" }
+helix-event = { git = "https://github.com/helix-editor/helix" }
+helix-view = { git = "https://github.com/helix-editor/helix" }
+helix-lsp = { git = "https://github.com/helix-editor/helix" }
+# helix-dap = { git = "https://github.com/helix-editor/helix" }
+helix-vcs = { git = "https://github.com/helix-editor/helix" }
+helix-loader = { git = "https://github.com/helix-editor/helix" }
+helix-term = { git = "https://github.com/helix-editor/helix" }
+tui = { git = "https://github.com/helix-editor/helix", package = "helix-tui", default-features = false }
 
 anyhow = "1"
 once_cell = "1.19"
@@ -78,7 +78,7 @@ libc = "0.2.153"
 crossterm = { version = "0.27", features = ["event-stream", "use-dev-tty"] }
 
 [build-dependencies]
-helix-loader = { path = "../helix/helix-loader" }
+helix-loader = { git = "https://github.com/helix-editor/helix" }
 
 [dev-dependencies]
 smallvec = "1.13"

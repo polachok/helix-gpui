@@ -85,18 +85,18 @@ fn main() -> Result<()> {
 
 fn window_options(_cx: &mut AppContext) -> gpui::WindowOptions {
     WindowOptions {
+        app_id: Some("helix-gpui".to_string()),
         titlebar: Some(TitlebarOptions {
             title: None,
             appears_transparent: true,
             traffic_light_position: None, //Some(point(px(9.0), px(9.0))),
         }),
-        bounds: None,
+        window_bounds: None,
         focus: true,
         show: true,
         kind: WindowKind::Normal,
         is_movable: true,
         display_id: None,
-        fullscreen: false,
         window_background: WindowBackgroundAppearance::Opaque,
     }
 }
@@ -138,6 +138,13 @@ pub enum Update {
 }
 
 impl gpui::EventEmitter<Update> for EditorModel {}
+
+struct FontSettings {
+    fixed_font: gpui::Font,
+    var_font: gpui::Font,
+}
+
+impl gpui::Global for FontSettings {}
 
 fn gui_main(app: Application, handle: tokio::runtime::Handle) {
     App::new().run(|cx: &mut AppContext| {
@@ -184,6 +191,12 @@ fn gui_main(app: Application, handle: tokio::runtime::Handle) {
 
             cx.activate(true);
             cx.set_menus(app_menus());
+
+            let font_settings = FontSettings {
+                fixed_font: gpui::font("JetBrains Mono"),
+                var_font: gpui::font("SF Pro"),
+            };
+            cx.set_global(font_settings);
 
             cx.new_view(|cx| {
                 cx.subscribe(&editor, |w: &mut workspace::Workspace, _, ev, cx| {
