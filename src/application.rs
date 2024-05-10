@@ -82,7 +82,7 @@ pub fn init_editor(
         doc.set_selection(view_id, pos);
 
         // Unset path to prevent accidentally saving to the original tutor file.
-        //doc_mut!(editor).set_path(None);
+        doc_mut!(editor).set_path(None);
     } else {
         editor.new_file(Action::VerticalSplit);
     }

@@ -144,7 +144,7 @@ impl NotificationView {
                             cx.background_executor()
                                 .timer(std::time::Duration::from_millis(5000))
                                 .await;
-                            this.update(&mut cx, |this, cx| {
+                            this.update(&mut cx, |this, _cx| {
                                 if this.lsp_status.contains_key(&id) {
                                     // TODO: this call causes workspace redraw for some reason
                                     //cx.notify();

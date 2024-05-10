@@ -101,7 +101,26 @@ fn window_options(_cx: &mut AppContext) -> gpui::WindowOptions {
     }
 }
 
-actions!(workspace, [About, Quit, OpenFile, ShowModal]);
+actions!(
+    workspace,
+    [
+        About,
+        Quit,
+        ShowModal,
+        Hide,
+        HideOthers,
+        ShowAll,
+        OpenFile,
+        Undo,
+        Redo,
+        Copy,
+        Paste,
+        Minimize,
+        MinimizeAll,
+        Zoom,
+        Tutor
+    ]
+);
 
 fn app_menus() -> Vec<Menu<'static>> {
     vec![
@@ -112,18 +131,40 @@ fn app_menus() -> Vec<Menu<'static>> {
                 MenuItem::separator(),
                 // MenuItem::action("Settings", OpenSettings),
                 // MenuItem::separator(),
-                // MenuItem::action("Hide Helix", Hide),
-                // MenuItem::action("Hide Others", HideOthers),
-                // MenuItem::action("Show All", ShowAll),
+                MenuItem::action("Hide Helix", Hide),
+                MenuItem::action("Hide Others", HideOthers),
+                MenuItem::action("Show All", ShowAll),
                 MenuItem::action("Quit", Quit),
             ],
         },
         Menu {
             name: "File",
             items: vec![
-                MenuItem::action("Open File", OpenFile),
+                MenuItem::action("Open...", OpenFile),
                 // MenuItem::action("Open Directory", OpenDirectory),
             ],
+        },
+        Menu {
+            name: "Edit",
+            items: vec![
+                MenuItem::action("Undo", Undo),
+                MenuItem::action("Redo", Redo),
+                MenuItem::separator(),
+                MenuItem::action("Copy", Copy),
+                MenuItem::action("Paste", Paste),
+            ],
+        },
+        Menu {
+            name: "Window",
+            items: vec![
+                MenuItem::action("Minimize", Minimize),
+                MenuItem::action("Minimize All", MinimizeAll),
+                MenuItem::action("Zoom", Zoom),
+            ],
+        },
+        Menu {
+            name: "Help",
+            items: vec![MenuItem::action("Tutorial", Tutor)],
         },
     ]
 }

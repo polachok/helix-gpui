@@ -344,6 +344,18 @@ impl Render for Workspace {
                     open(editor.clone(), handle.clone(), cx)
                 }
             })
+            .on_action(move |&crate::Hide, cx| cx.hide())
+            .on_action(move |&crate::HideOthers, cx| cx.hide_other_apps())
+            .on_action(move |&crate::ShowAll, cx| cx.unhide_other_apps())
+            .on_action(move |&crate::Minimize, cx| cx.minimize_window())
+            .on_action(move |&crate::Zoom, cx| cx.zoom_window())
+            .on_action({
+                let handle = self.handle.clone();
+                let editor = self.editor.clone();
+                cx.listener(move |_, &crate::Tutor, cx| {
+                    load_tutor(editor.clone(), handle.clone(), cx)
+                })
+            })
             .id("workspace")
             .bg(bg_color)
             .flex()
@@ -368,6 +380,18 @@ impl Render for Workspace {
                 },
             )
     }
+}
+
+fn load_tutor(
+    editor: Model<EditorModel>,
+    handle: tokio::runtime::Handle,
+    cx: &mut ViewContext<Workspace>,
+) {
+    let _guard = handle.enter();
+    let mut editor = editor.read(cx).lock();
+    let _ = crate::utils::load_tutor(&mut editor);
+    drop(editor);
+    cx.notify()
 }
 
 fn open(editor: Model<EditorModel>, handle: tokio::runtime::Handle, cx: &mut WindowContext) {
