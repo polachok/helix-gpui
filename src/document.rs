@@ -38,6 +38,8 @@ impl DocumentView {
     }
 }
 
+impl EventEmitter<DismissEvent> for DocumentView {}
+
 impl Render for DocumentView {
     fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
         println!("{:?}: rendering document view", self.view_id);

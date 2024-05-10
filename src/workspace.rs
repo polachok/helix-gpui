@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -151,9 +151,12 @@ impl Render for Workspace {
         let mut focused_file_name = None;
         let mut focused_view_id = None;
 
+        let mut view_ids = HashSet::new();
         for (view, is_focused) in editor.tree.views() {
             let doc = editor.document(view.doc).unwrap();
             let view_id = view.id;
+
+            view_ids.insert(view_id);
 
             if is_focused {
                 focused_view_id = Some(view_id);
@@ -179,7 +182,17 @@ impl Render for Workspace {
             });
         }
         drop(editor);
-        // TODO: remove views that are not in the tree
+        let to_remove = self
+            .documents
+            .keys()
+            .copied()
+            .filter(|id| !view_ids.contains(id))
+            .collect::<Vec<_>>();
+        for view_id in to_remove {
+            if let Some(view) = self.documents.remove(&view_id) {
+                cx.dismiss_view(&view);
+            }
+        }
 
         let mut docs = vec![];
         for view in self.documents.values() {
@@ -295,7 +308,10 @@ impl Render for Workspace {
                     }
 
                     if let Some(view_id) = focused_view_id {
-                        editor.lock().ensure_cursor_in_view(view_id);
+                        let mut editor = editor.lock();
+                        if editor.tree.contains(view_id) {
+                            editor.ensure_cursor_in_view(view_id);
+                        }
                     }
                     drop(_guard);
                 });
