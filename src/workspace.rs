@@ -123,10 +123,8 @@ impl Workspace {
             crate::Update::Redraw => {
                 cx.notify();
             }
-            crate::Update::Prompt(prompt) => {
-                cx.notify();
-            }
-            crate::Update::Picker(picker) => {
+            crate::Update::Prompt(_) | crate::Update::Picker(_) => {
+                // handled by overlay
                 cx.notify();
             }
             crate::Update::Info(_) => {
@@ -148,10 +146,9 @@ impl Render for Workspace {
         let text_color =
             crate::utils::color_to_hsla(default_ui_text.fg.unwrap()).unwrap_or(white());
 
-        let mut focused_file_name = None;
-
         let editor_rect = editor.tree.area();
 
+        let mut focused_file_name = None;
         let mut focused_view_id = None;
 
         for (view, is_focused) in editor.tree.views() {
@@ -281,6 +278,7 @@ impl Render for Workspace {
                         } else {
                             None
                         };
+
                         (prompt, picker)
                     });
 
