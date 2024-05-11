@@ -559,32 +559,34 @@ impl Element for DocumentElement {
                     origin.y += after_layout.line_height;
                 }
                 // draw cursor
-                match cursor {
-                    (Some(position), kind) => {
-                        let helix_core::Position { row, col } = position;
-                        let origin_y = after_layout.line_height * row as f32;
-                        let origin_x = after_layout.cell_width * col as f32;
-                        let mut cursor_fg = cursor_style
-                            .bg
-                            .and_then(|fg| color_to_hsla(fg))
-                            .unwrap_or(fg_color);
-                        cursor_fg.a = 0.5;
+                if self.is_focused {
+                    match cursor {
+                        (Some(position), kind) => {
+                            let helix_core::Position { row, col } = position;
+                            let origin_y = after_layout.line_height * row as f32;
+                            let origin_x = after_layout.cell_width * col as f32;
+                            let mut cursor_fg = cursor_style
+                                .bg
+                                .and_then(|fg| color_to_hsla(fg))
+                                .unwrap_or(fg_color);
+                            cursor_fg.a = 0.5;
 
-                        let mut cursor = Cursor {
-                            origin: gpui::Point::new(origin_x, origin_y),
-                            kind,
-                            color: cursor_fg,
-                            block_width: after_layout.cell_width,
-                            line_height: after_layout.line_height,
-                            text: cursor_text,
-                        };
-                        let mut origin = bounds.origin;
-                        origin.x += px(2.);
-                        origin.y += px(1.);
+                            let mut cursor = Cursor {
+                                origin: gpui::Point::new(origin_x, origin_y),
+                                kind,
+                                color: cursor_fg,
+                                block_width: after_layout.cell_width,
+                                line_height: after_layout.line_height,
+                                text: cursor_text,
+                            };
+                            let mut origin = bounds.origin;
+                            origin.x += px(2.);
+                            origin.y += px(1.);
 
-                        cursor.paint(origin, cx);
+                            cursor.paint(origin, cx);
+                        }
+                        (None, _) => {}
                     }
-                    (None, _) => {}
                 }
                 // draw gutter
                 {
