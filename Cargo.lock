@@ -2762,7 +2762,7 @@ checksum = "95505c38b4572b2d910cecb0281560f54b440a19336cbbcb27bf6ce6adc6f5a8"
 [[package]]
 name = "helix-core"
 version = "24.3.0"
-source = "git+https://github.com/helix-editor/helix#00e9e5eadef16dd20cd24d303a664faaeb8faa56"
+source = "git+https://github.com/polachok/helix?rev=31651eab32b4a950a2dd86c6b30f1f7b3c854979#31651eab32b4a950a2dd86c6b30f1f7b3c854979"
 dependencies = [
  "ahash",
  "arc-swap",
@@ -2798,7 +2798,7 @@ dependencies = [
 [[package]]
 name = "helix-dap"
 version = "24.3.0"
-source = "git+https://github.com/helix-editor/helix#00e9e5eadef16dd20cd24d303a664faaeb8faa56"
+source = "git+https://github.com/polachok/helix?rev=31651eab32b4a950a2dd86c6b30f1f7b3c854979#31651eab32b4a950a2dd86c6b30f1f7b3c854979"
 dependencies = [
  "anyhow",
  "helix-core",
@@ -2813,7 +2813,7 @@ dependencies = [
 [[package]]
 name = "helix-event"
 version = "24.3.0"
-source = "git+https://github.com/helix-editor/helix#00e9e5eadef16dd20cd24d303a664faaeb8faa56"
+source = "git+https://github.com/polachok/helix?rev=31651eab32b4a950a2dd86c6b30f1f7b3c854979#31651eab32b4a950a2dd86c6b30f1f7b3c854979"
 dependencies = [
  "ahash",
  "anyhow",
@@ -2849,8 +2849,6 @@ dependencies = [
  "helix-vcs",
  "helix-view",
  "ignore",
- "indoc",
- "libc",
  "log",
  "nucleo",
  "once_cell",
@@ -2859,9 +2857,6 @@ dependencies = [
  "serde",
  "serde_json",
  "signal-hook",
- "signal-hook-tokio",
- "smallvec",
- "tempfile",
  "termini",
  "tokio",
  "tokio-stream",
@@ -2872,7 +2867,7 @@ dependencies = [
 [[package]]
 name = "helix-loader"
 version = "24.3.0"
-source = "git+https://github.com/helix-editor/helix#00e9e5eadef16dd20cd24d303a664faaeb8faa56"
+source = "git+https://github.com/polachok/helix?rev=31651eab32b4a950a2dd86c6b30f1f7b3c854979#31651eab32b4a950a2dd86c6b30f1f7b3c854979"
 dependencies = [
  "anyhow",
  "cc",
@@ -2892,7 +2887,7 @@ dependencies = [
 [[package]]
 name = "helix-lsp"
 version = "24.3.0"
-source = "git+https://github.com/helix-editor/helix#00e9e5eadef16dd20cd24d303a664faaeb8faa56"
+source = "git+https://github.com/polachok/helix?rev=31651eab32b4a950a2dd86c6b30f1f7b3c854979#31651eab32b4a950a2dd86c6b30f1f7b3c854979"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2917,12 +2912,12 @@ dependencies = [
 [[package]]
 name = "helix-parsec"
 version = "24.3.0"
-source = "git+https://github.com/helix-editor/helix#00e9e5eadef16dd20cd24d303a664faaeb8faa56"
+source = "git+https://github.com/polachok/helix?rev=31651eab32b4a950a2dd86c6b30f1f7b3c854979#31651eab32b4a950a2dd86c6b30f1f7b3c854979"
 
 [[package]]
 name = "helix-stdx"
 version = "24.3.0"
-source = "git+https://github.com/helix-editor/helix#00e9e5eadef16dd20cd24d303a664faaeb8faa56"
+source = "git+https://github.com/polachok/helix?rev=31651eab32b4a950a2dd86c6b30f1f7b3c854979#31651eab32b4a950a2dd86c6b30f1f7b3c854979"
 dependencies = [
  "bitflags 2.5.0",
  "dunce",
@@ -2937,7 +2932,7 @@ dependencies = [
 [[package]]
 name = "helix-term"
 version = "24.3.0"
-source = "git+https://github.com/helix-editor/helix#00e9e5eadef16dd20cd24d303a664faaeb8faa56"
+source = "git+https://github.com/polachok/helix?rev=31651eab32b4a950a2dd86c6b30f1f7b3c854979#31651eab32b4a950a2dd86c6b30f1f7b3c854979"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2978,7 +2973,7 @@ dependencies = [
 [[package]]
 name = "helix-tui"
 version = "24.3.0"
-source = "git+https://github.com/helix-editor/helix#00e9e5eadef16dd20cd24d303a664faaeb8faa56"
+source = "git+https://github.com/polachok/helix?rev=31651eab32b4a950a2dd86c6b30f1f7b3c854979#31651eab32b4a950a2dd86c6b30f1f7b3c854979"
 dependencies = [
  "bitflags 2.5.0",
  "cassowary",
@@ -2994,7 +2989,7 @@ dependencies = [
 [[package]]
 name = "helix-vcs"
 version = "24.3.0"
-source = "git+https://github.com/helix-editor/helix#00e9e5eadef16dd20cd24d303a664faaeb8faa56"
+source = "git+https://github.com/polachok/helix?rev=31651eab32b4a950a2dd86c6b30f1f7b3c854979#31651eab32b4a950a2dd86c6b30f1f7b3c854979"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3010,7 +3005,7 @@ dependencies = [
 [[package]]
 name = "helix-view"
 version = "24.3.0"
-source = "git+https://github.com/helix-editor/helix#00e9e5eadef16dd20cd24d303a664faaeb8faa56"
+source = "git+https://github.com/polachok/helix?rev=31651eab32b4a950a2dd86c6b30f1f7b3c854979#31651eab32b4a950a2dd86c6b30f1f7b3c854979"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3226,12 +3221,6 @@ dependencies = [
  "equivalent",
  "hashbrown 0.14.5",
 ]
-
-[[package]]
-name = "indoc"
-version = "2.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b248f5224d1d606005e02c97f5aa4e88eeb230488bcc03bc9ca4d7991399f2b5"
 
 [[package]]
 name = "inout"

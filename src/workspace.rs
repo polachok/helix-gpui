@@ -133,6 +133,23 @@ impl Workspace {
             }
         }
     }
+
+    fn render_tree(
+        root_id: ViewId,
+        root: Div,
+        containers: &mut HashMap<ViewId, Div>,
+        tree: &HashMap<ViewId, Vec<ViewId>>,
+    ) -> Div {
+        let mut root = root;
+        if let Some(children) = tree.get(&root_id) {
+            for child_id in children {
+                let child = containers.remove(child_id).unwrap();
+                let child = Self::render_tree(*child_id, child, containers, tree);
+                root = root.child(child);
+            }
+        }
+        root
+    }
 }
 
 impl Render for Workspace {
@@ -181,6 +198,35 @@ impl Render for Workspace {
                 })
             });
         }
+        use helix_view::tree::{ContainerItem, Layout};
+        let mut containers = HashMap::new();
+        let mut tree = HashMap::new();
+        let mut root_id = None;
+        for item in editor.tree.traverse_containers() {
+            match item {
+                ContainerItem::Container { id, parent, layout } => {
+                    let container = match layout {
+                        Layout::Horizontal => div().flex().size_full().flex_col(),
+                        Layout::Vertical => div().flex().size_full().flex_row(),
+                    };
+                    containers.insert(id, container);
+                    let entry = tree.entry(parent).or_insert_with(|| Vec::new());
+
+                    if id == parent {
+                        root_id = Some(id);
+                    } else {
+                        entry.push(id);
+                    }
+                }
+                ContainerItem::Child { id, parent } => {
+                    let view = self.documents.get(&id).unwrap().clone();
+                    let mut container = containers.remove(&parent).unwrap();
+                    container = container.child(view);
+                    containers.insert(parent, container);
+                }
+            }
+        }
+
         drop(editor);
         let to_remove = self
             .documents
@@ -194,10 +240,18 @@ impl Render for Workspace {
             }
         }
 
-        let mut docs = vec![];
-        for view in self.documents.values() {
-            docs.push(AnyView::from(view.clone()).cached(StyleRefinement::default().size_full()));
+        let mut docs_root = None;
+        // println!("containers: {:?} tree: {:?}", containers.len(), tree);
+        if let Some(root_id) = root_id {
+            let root = containers.remove(&root_id).unwrap();
+            let child = Self::render_tree(root_id, root, &mut containers, &tree);
+            let root = div().flex().w_full().h_full().child(child);
+            docs_root = Some(root);
         }
+        // docs.push(root);
+        // for view in self.documents.values() {
+        //     docs.push(AnyView::from(view.clone()).cached(StyleRefinement::default().size_full()));
+        // }
 
         let focused_view = focused_view_id
             .and_then(|id| self.documents.get(&id))
@@ -364,7 +418,7 @@ impl Render for Workspace {
             .h_full()
             .focusable()
             .child(top_bar)
-            .children(docs)
+            .when_some(docs_root, |this, docs| this.child(docs))
             .child(self.notifications.clone())
             .when(!self.overlay.read(cx).is_empty(), |this| {
                 let view = &self.overlay;
