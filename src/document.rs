@@ -486,9 +486,6 @@ impl Element for DocumentElement {
 
                 let view = editor.tree.get(self.view_id);
                 let _viewport = view.area;
-                let cursor = editor.cursor();
-                let (cursor_pos, _cursor_kind) = cursor;
-                // println!("cursor @ {:?}", cursor);
 
                 let theme = &editor.theme;
                 let default_style = theme.get("ui.background");
@@ -506,14 +503,20 @@ impl Element for DocumentElement {
                 .unwrap_or(white());
 
                 let document = editor.document(self.doc_id).unwrap();
+                let text = document.text();
+
+                let (_, cursor_kind) = editor.cursor();
+                let primary_idx = document
+                    .selection(self.view_id)
+                    .primary()
+                    .cursor(text.slice(..));
+                let cursor_pos = view.screen_coords_at_pos(document, text.slice(..), primary_idx);
 
                 let gutter_width = view.gutter_offset(document);
                 let gutter_overflow = gutter_width == 0;
                 if !gutter_overflow {
                     debug!("need to render gutter {}", gutter_width);
                 }
-
-                let text = document.text();
 
                 let cursor_text = None; // TODO
 
@@ -553,6 +556,7 @@ impl Element for DocumentElement {
                 let mut origin = bounds.origin;
                 origin.x += px(2.) + (after_layout.cell_width * gutter_width as f32);
                 origin.y += px(1.);
+
                 // draw document
                 for line in shaped_lines {
                     line.paint(origin, after_layout.line_height, cx).unwrap();
@@ -560,11 +564,12 @@ impl Element for DocumentElement {
                 }
                 // draw cursor
                 if self.is_focused {
-                    match cursor {
+                    match (cursor_pos, cursor_kind) {
                         (Some(position), kind) => {
                             let helix_core::Position { row, col } = position;
                             let origin_y = after_layout.line_height * row as f32;
-                            let origin_x = after_layout.cell_width * col as f32;
+                            let origin_x =
+                                after_layout.cell_width * ((col + gutter_width as usize) as f32);
                             let mut cursor_fg = cursor_style
                                 .bg
                                 .and_then(|fg| color_to_hsla(fg))
