@@ -36,6 +36,10 @@ impl DocumentView {
             is_focused,
         }
     }
+
+    pub fn set_focused(&mut self, is_focused: bool) {
+        self.is_focused = is_focused;
+    }
 }
 
 impl EventEmitter<DismissEvent> for DocumentView {}

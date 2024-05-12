@@ -17,6 +17,7 @@ use crate::EditorModel;
 pub struct Workspace {
     editor: Model<EditorModel>,
     view: Model<EditorView>,
+    focused_view_id: Option<ViewId>,
     documents: HashMap<ViewId, View<DocumentView>>,
     compositor: Model<Compositor>,
     handle: tokio::runtime::Handle,
@@ -45,6 +46,7 @@ impl Workspace {
         Self {
             editor,
             view,
+            focused_view_id: None,
             compositor,
             handle,
             overlay,
@@ -150,6 +152,85 @@ impl Workspace {
         }
         root
     }
+
+    fn handle_key(&mut self, ev: &KeyDownEvent, cx: &mut ViewContext<Self>) {
+        println!("WORKSPACE KEY DOWN: {:?}", ev.keystroke);
+
+        let editor = self.editor.clone();
+        let compositor = self.compositor.clone();
+        let rt_handle = self.handle.clone();
+        let view = self.view.clone();
+
+        let key = crate::utils::translate_key(&ev.keystroke);
+
+        editor.update(cx, |editor, cx| {
+            let _guard = rt_handle.enter();
+
+            let is_handled = compositor.update(cx, |compositor, cx| {
+                let mut editor = editor.lock();
+                let mut comp_ctx = helix_term::compositor::Context {
+                    editor: &mut editor,
+                    scroll: None,
+                    jobs: &mut helix_term::job::Jobs::new(),
+                };
+                let mut is_handled =
+                    compositor.handle_event(&helix_view::input::Event::Key(key), &mut comp_ctx);
+                debug!("is handled by comp? {:?}", is_handled);
+
+                if !is_handled {
+                    is_handled = view.update(cx, |view, _cx| {
+                        use helix_term::compositor::{Component, EventResult};
+                        let event = &helix_view::input::Event::Key(key);
+                        let res = view.handle_event(event, &mut comp_ctx);
+                        let is_handled = matches!(res, EventResult::Consumed(_));
+                        if let EventResult::Consumed(Some(cb)) = res {
+                            cb(compositor, &mut comp_ctx);
+                        }
+                        is_handled
+                    });
+                }
+                is_handled
+            });
+            debug!("is handled? {:?}", is_handled);
+
+            let (prompt, picker) = compositor.update(cx, |compositor, _cx| {
+                use crate::picker::Picker as PickerComponent;
+                use helix_term::ui::{overlay::Overlay, Picker};
+                use std::path::PathBuf;
+                let mut editor = editor.lock();
+
+                let picker = if let Some(p) =
+                    compositor.find_id::<Overlay<Picker<PathBuf>>>(helix_term::ui::picker::ID)
+                {
+                    println!("found file picker");
+                    Some(PickerComponent::make(&mut editor, &mut p.content))
+                } else {
+                    None
+                };
+                let prompt = if let Some(p) = compositor.find::<helix_term::ui::Prompt>() {
+                    Some(Prompt::make(&mut editor, p))
+                } else {
+                    None
+                };
+
+                (prompt, picker)
+            });
+
+            if let Some(picker) = picker {
+                cx.emit(crate::Update::Picker(picker));
+            }
+
+            if let Some(prompt) = prompt {
+                cx.emit(crate::Update::Prompt(prompt));
+            }
+
+            if let Some(info) = editor.lock().autoinfo.take() {
+                cx.emit(crate::Update::Info(info));
+            }
+            drop(_guard);
+            cx.notify();
+        });
+    }
 }
 
 impl Render for Workspace {
@@ -166,9 +247,8 @@ impl Render for Workspace {
         let editor_rect = editor.tree.area();
 
         let mut focused_file_name = None;
-        let mut focused_view_id = None;
-
         let mut view_ids = HashSet::new();
+
         for (view, is_focused) in editor.tree.views() {
             let doc = editor.document(view.doc).unwrap();
             let view_id = view.id;
@@ -176,7 +256,7 @@ impl Render for Workspace {
             view_ids.insert(view_id);
 
             if is_focused {
-                focused_view_id = Some(view_id);
+                self.focused_view_id = Some(view_id);
                 focused_file_name = doc.path().map(|p| p.display().to_string());
             }
 
@@ -186,7 +266,7 @@ impl Render for Workspace {
                 ..Default::default()
             };
 
-            let _doc_view = self.documents.entry(view_id).or_insert_with(|| {
+            let view = self.documents.entry(view_id).or_insert_with(|| {
                 cx.new_view(|cx| {
                     DocumentView::new(
                         self.editor.clone(),
@@ -197,11 +277,15 @@ impl Render for Workspace {
                     )
                 })
             });
+            view.update(cx, |view, _cx| {
+                view.set_focused(is_focused);
+            });
         }
         use helix_view::tree::{ContainerItem, Layout};
         let mut containers = HashMap::new();
         let mut tree = HashMap::new();
         let mut root_id = None;
+
         for item in editor.tree.traverse_containers() {
             match item {
                 ContainerItem::Container { id, parent, layout } => {
@@ -253,7 +337,8 @@ impl Render for Workspace {
         //     docs.push(AnyView::from(view.clone()).cached(StyleRefinement::default().size_full()));
         // }
 
-        let focused_view = focused_view_id
+        let focused_view = self
+            .focused_view_id
             .and_then(|id| self.documents.get(&id))
             .cloned();
         if let Some(view) = &focused_view {
@@ -281,100 +366,20 @@ impl Render for Workspace {
 
         println!("rendering workspace");
 
-        let editor = self.editor.clone();
         let compositor = self.compositor.clone();
-        let rt_handle = self.handle.clone();
-        let view = self.view.clone();
 
         compositor.update(cx, move |compositor, _cx| {
             compositor.resize(editor_rect);
         });
 
+        if let Some(view) = &focused_view {
+            cx.focus_view(view);
+        }
+
         div()
-            .on_key_down(move |ev, cx| {
-                println!("WORKSPACE KEY DOWN: {:?}", ev.keystroke);
-
-                let key = crate::utils::translate_key(&ev.keystroke);
-
-                editor.update(cx, |editor, cx| {
-                    let _guard = rt_handle.enter();
-
-                    let is_handled = compositor.update(cx, |compositor, cx| {
-                        let mut editor = editor.lock();
-                        let mut comp_ctx = helix_term::compositor::Context {
-                            editor: &mut editor,
-                            scroll: None,
-                            jobs: &mut helix_term::job::Jobs::new(),
-                        };
-                        let mut is_handled = compositor
-                            .handle_event(&helix_view::input::Event::Key(key), &mut comp_ctx);
-                        debug!("is handled by comp? {:?}", is_handled);
-
-                        if !is_handled {
-                            is_handled = view.update(cx, |view, _cx| {
-                                use helix_term::compositor::{Component, EventResult};
-                                let event = &helix_view::input::Event::Key(key);
-                                let res = view.handle_event(event, &mut comp_ctx);
-                                let is_handled = matches!(res, EventResult::Consumed(_));
-                                if let EventResult::Consumed(Some(cb)) = res {
-                                    cb(compositor, &mut comp_ctx);
-                                }
-                                is_handled
-                            });
-                        }
-                        is_handled
-                    });
-                    debug!("is handled? {:?}", is_handled);
-
-                    let (prompt, picker) = compositor.update(cx, |compositor, _cx| {
-                        use crate::picker::Picker as PickerComponent;
-                        use helix_term::ui::{overlay::Overlay, Picker};
-                        use std::path::PathBuf;
-                        let mut editor = editor.lock();
-
-                        let picker = if let Some(p) = compositor
-                            .find_id::<Overlay<Picker<PathBuf>>>(helix_term::ui::picker::ID)
-                        {
-                            println!("found file picker");
-                            Some(PickerComponent::make(&mut editor, &mut p.content))
-                        } else {
-                            None
-                        };
-                        let prompt = if let Some(p) = compositor.find::<helix_term::ui::Prompt>() {
-                            Some(Prompt::make(&mut editor, p))
-                        } else {
-                            None
-                        };
-
-                        (prompt, picker)
-                    });
-
-                    if let Some(picker) = picker {
-                        cx.emit(crate::Update::Picker(picker));
-                    }
-
-                    if let Some(prompt) = prompt {
-                        cx.emit(crate::Update::Prompt(prompt));
-                    }
-
-                    if let Some(info) = editor.lock().autoinfo.take() {
-                        cx.emit(crate::Update::Info(info));
-                    }
-
-                    if let Some(view_id) = focused_view_id {
-                        let mut editor = editor.lock();
-                        if editor.tree.contains(view_id) {
-                            editor.ensure_cursor_in_view(view_id);
-                        }
-                    }
-                    drop(_guard);
-                });
-
-                if let Some(view) = &focused_view {
-                    cx.focus_view(view);
-                    cx.notify(view.entity_id());
-                }
-            })
+            .on_key_down(cx.listener(|view, ev, cx| {
+                view.handle_key(ev, cx);
+            }))
             .on_action(move |&crate::About, _cx| {
                 eprintln!("hello");
             })
