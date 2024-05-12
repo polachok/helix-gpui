@@ -494,11 +494,8 @@ impl Element for DocumentElement {
                 let theme = &editor.theme;
                 let default_style = theme.get("ui.background");
                 let bg_color = color_to_hsla(default_style.bg.unwrap()).unwrap_or(black());
-                let window_style = theme.get("ui.window");
-                let _border_color = color_to_hsla(window_style.fg.unwrap());
                 let cursor_style = theme.get("ui.cursor.primary");
                 let bg = fill(bounds, bg_color);
-                // let _borders = outline(bounds, border_color);
                 let fg_color = color_to_hsla(
                     default_style
                         .fg
@@ -555,7 +552,6 @@ impl Element for DocumentElement {
                     .unwrap();
 
                 cx.paint_quad(bg);
-                //cx.paint_quad(borders);
 
                 let mut origin = bounds.origin;
                 origin.x += px(2.) + (after_layout.cell_width * gutter_width as f32);

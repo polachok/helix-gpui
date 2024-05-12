@@ -12,6 +12,7 @@ use crate::info_box::InfoBoxView;
 use crate::notification::NotificationView;
 use crate::overlay::OverlayView;
 use crate::prompt::Prompt;
+use crate::utils;
 use crate::EditorModel;
 
 pub struct Workspace {
@@ -64,10 +65,8 @@ impl Workspace {
         let theme = Self::theme(&editor, cx);
         let text_style = theme.get("ui.text.info");
         let popup_style = theme.get("ui.popup.info");
-        let popup_bg_color =
-            crate::utils::color_to_hsla(popup_style.bg.unwrap()).unwrap_or(black());
-        let popup_text_color =
-            crate::utils::color_to_hsla(text_style.fg.unwrap()).unwrap_or(white());
+        let popup_bg_color = utils::color_to_hsla(popup_style.bg.unwrap()).unwrap_or(black());
+        let popup_text_color = utils::color_to_hsla(text_style.fg.unwrap()).unwrap_or(white());
 
         cx.new_view(|cx| {
             let view = NotificationView::new(popup_bg_color, popup_text_color);
@@ -82,11 +81,11 @@ impl Workspace {
         let popup_style = theme.get("ui.popup.info");
         let fg = text_style
             .fg
-            .and_then(crate::utils::color_to_hsla)
+            .and_then(utils::color_to_hsla)
             .unwrap_or(white());
         let bg = popup_style
             .bg
-            .and_then(crate::utils::color_to_hsla)
+            .and_then(utils::color_to_hsla)
             .unwrap_or(black());
         let mut style = Style::default();
         style.text.color = Some(fg);
@@ -161,7 +160,7 @@ impl Workspace {
         let rt_handle = self.handle.clone();
         let view = self.view.clone();
 
-        let key = crate::utils::translate_key(&ev.keystroke);
+        let key = utils::translate_key(&ev.keystroke);
 
         editor.update(cx, |editor, cx| {
             let _guard = rt_handle.enter();
@@ -228,8 +227,13 @@ impl Workspace {
                 cx.emit(crate::Update::Info(info));
             }
             drop(_guard);
-            cx.notify();
         });
+        if let Some(view) = self.focused_view_id.and_then(|id| self.documents.get(&id)) {
+            view.update(cx, |_view, cx| {
+                cx.notify();
+            })
+        }
+        cx.notify();
     }
 }
 
@@ -240,18 +244,28 @@ impl Render for Workspace {
 
         let default_style = editor.theme.get("ui.background");
         let default_ui_text = editor.theme.get("ui.text");
-        let bg_color = crate::utils::color_to_hsla(default_style.bg.unwrap()).unwrap_or(black());
-        let text_color =
-            crate::utils::color_to_hsla(default_ui_text.fg.unwrap()).unwrap_or(white());
+        let bg_color = utils::color_to_hsla(default_style.bg.unwrap()).unwrap_or(black());
+        let text_color = utils::color_to_hsla(default_ui_text.fg.unwrap()).unwrap_or(white());
+        let window_style = editor.theme.get("ui.window");
+        let border_color = utils::color_to_hsla(window_style.fg.unwrap()).unwrap_or(white());
 
         let editor_rect = editor.tree.area();
 
         let mut focused_file_name = None;
         let mut view_ids = HashSet::new();
+        let mut right_borders = HashSet::new();
 
         for (view, is_focused) in editor.tree.views() {
             let doc = editor.document(view.doc).unwrap();
             let view_id = view.id;
+
+            if editor
+                .tree
+                .find_split_in_direction(view_id, helix_view::tree::Direction::Right)
+                .is_some()
+            {
+                right_borders.insert(view_id);
+            }
 
             view_ids.insert(view_id);
 
@@ -304,6 +318,15 @@ impl Render for Workspace {
                 }
                 ContainerItem::Child { id, parent } => {
                     let view = self.documents.get(&id).unwrap().clone();
+                    let has_border = right_borders.contains(&id);
+                    let view = div()
+                        .flex()
+                        .size_full()
+                        .child(view)
+                        .when(has_border, |this| {
+                            this.border_color(border_color).border_r_1()
+                        });
+
                     let mut container = containers.remove(&parent).unwrap();
                     container = container.child(view);
                     containers.insert(parent, container);
@@ -448,7 +471,7 @@ fn load_tutor(
 ) {
     let _guard = handle.enter();
     let mut editor = editor.read(cx).lock();
-    let _ = crate::utils::load_tutor(&mut editor);
+    let _ = utils::load_tutor(&mut editor);
     drop(editor);
     cx.notify()
 }
