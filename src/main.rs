@@ -169,6 +169,12 @@ fn app_menus() -> Vec<Menu<'static>> {
     ]
 }
 
+#[derive(Debug, Clone)]
+pub struct EditorStatus {
+    pub status: String,
+    pub severity: helix_core::diagnostic::Severity,
+}
+
 #[derive(Debug)]
 pub enum Update {
     Redraw,
@@ -176,6 +182,7 @@ pub enum Update {
     Picker(picker::Picker),
     Info(helix_view::info::Info),
     EditorEvent(helix_view::editor::EditorEvent),
+    EditorStatus(Option<EditorStatus>),
 }
 
 impl gpui::EventEmitter<Update> for EditorModel {}
@@ -211,15 +218,32 @@ fn gui_main(app: Application, handle: tokio::runtime::Handle) {
                     let editor = editor_1.clone();
                     let _guard = handle_1.enter();
                     loop {
+                        let mut status = None;
                         use futures_util::future::FutureExt;
                         cx.background_executor()
                             .timer(Duration::from_millis(100))
                             .await;
                         if let Some(mut editor) = editor.try_lock() {
                             if let Some(event) = editor.wait_event().now_or_never() {
+                                let new_status = editor.get_status();
+                                if new_status != status {
+                                    status = new_status;
+
+                                    let _ = cx.update_model(&model, |_, cx| {
+                                        let status =
+                                            status.map(|(status, severity)| EditorStatus {
+                                                status: status.to_string(),
+                                                severity: *severity,
+                                            });
+                                        cx.emit(Update::EditorStatus(status));
+                                    });
+                                }
                                 drop(editor);
                                 let _ = cx.update_model(&model, |_, cx| {
-                                    cx.emit(Update::EditorEvent(event));
+                                    if !matches!(event, helix_view::editor::EditorEvent::IdleTimer)
+                                    {
+                                        cx.emit(Update::EditorEvent(event));
+                                    }
                                 });
                             }
                         }

@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use helix_term::compositor::Compositor;
+use helix_term::job::Jobs;
 use helix_term::ui::EditorView;
 use helix_view::ViewId;
 use log::{debug, info};
@@ -18,6 +19,7 @@ use crate::EditorModel;
 pub struct Workspace {
     editor: Model<EditorModel>,
     view: Model<EditorView>,
+    jobs: Model<Jobs>,
     focused_view_id: Option<ViewId>,
     documents: HashMap<ViewId, View<DocumentView>>,
     compositor: Model<Compositor>,
@@ -43,6 +45,7 @@ impl Workspace {
             view.subscribe(&editor, cx);
             view
         });
+        let jobs = cx.new_model(|_| Jobs::new());
 
         Self {
             editor,
@@ -50,6 +53,7 @@ impl Workspace {
             focused_view_id: None,
             compositor,
             handle,
+            jobs,
             overlay,
             info,
             info_hidden: true,
@@ -121,6 +125,7 @@ impl Workspace {
                     }
                 }
             }
+            crate::Update::EditorStatus(_) => {}
             crate::Update::Redraw => {
                 cx.notify();
             }
@@ -156,6 +161,7 @@ impl Workspace {
         println!("WORKSPACE KEY DOWN: {:?}", ev.keystroke);
 
         let editor = self.editor.clone();
+        let jobs = self.jobs.clone();
         let compositor = self.compositor.clone();
         let rt_handle = self.handle.clone();
         let view = self.view.clone();
@@ -165,32 +171,35 @@ impl Workspace {
         editor.update(cx, |editor, cx| {
             let _guard = rt_handle.enter();
 
-            let is_handled = compositor.update(cx, |compositor, cx| {
-                let mut editor = editor.lock();
-                let mut comp_ctx = helix_term::compositor::Context {
-                    editor: &mut editor,
-                    scroll: None,
-                    jobs: &mut helix_term::job::Jobs::new(),
-                };
-                let mut is_handled =
-                    compositor.handle_event(&helix_view::input::Event::Key(key), &mut comp_ctx);
-                debug!("is handled by comp? {:?}", is_handled);
+            let is_handled = jobs.update(cx, |mut jobs, cx| {
+                compositor.update(cx, |compositor, cx| {
+                    let mut editor = editor.lock();
+                    let mut comp_ctx = helix_term::compositor::Context {
+                        editor: &mut editor,
+                        scroll: None,
+                        jobs: &mut jobs,
+                    };
+                    let mut is_handled =
+                        compositor.handle_event(&helix_view::input::Event::Key(key), &mut comp_ctx);
+                    debug!("is handled by comp? {:?}", is_handled);
 
-                if !is_handled {
-                    is_handled = view.update(cx, |view, _cx| {
-                        use helix_term::compositor::{Component, EventResult};
-                        let event = &helix_view::input::Event::Key(key);
-                        let res = view.handle_event(event, &mut comp_ctx);
-                        let is_handled = matches!(res, EventResult::Consumed(_));
-                        if let EventResult::Consumed(Some(cb)) = res {
-                            cb(compositor, &mut comp_ctx);
-                        }
-                        is_handled
-                    });
-                }
-                is_handled
+                    if !is_handled {
+                        is_handled = view.update(cx, |view, _cx| {
+                            use helix_term::compositor::{Component, EventResult};
+                            let event = &helix_view::input::Event::Key(key);
+                            let res = view.handle_event(event, &mut comp_ctx);
+                            let is_handled = matches!(res, EventResult::Consumed(_));
+                            if let EventResult::Consumed(Some(cb)) = res {
+                                cb(compositor, &mut comp_ctx);
+                            }
+                            is_handled
+                        });
+                    }
+                    is_handled
+                })
             });
             debug!("is handled? {:?}", is_handled);
+            println!("KEY IS HANDLED ? {:?}", is_handled);
 
             let (prompt, picker) = compositor.update(cx, |compositor, _cx| {
                 use crate::picker::Picker as PickerComponent;

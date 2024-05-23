@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 
-use gpui::{prelude::FluentBuilder as _, *};
+use crate::EditorStatus;
+use gpui::{prelude::FluentBuilder, *};
 use helix_lsp::{
     lsp::{NumberOrString, ProgressParamsValue, WorkDoneProgress},
     LanguageServerId,
 };
+use helix_view::document::DocumentSavedEvent;
 use log::info;
 
 enum LspStatusEvent {
@@ -37,6 +39,41 @@ struct Notification {
 }
 
 impl Notification {
+    fn from_save_event(event: &Result<DocumentSavedEvent, String>, bg: Hsla, text: Hsla) -> Self {
+        let (title, message) = match event {
+            Ok(saved) => (
+                "Saved".to_string(),
+                format!("saved to {}", saved.path.display()),
+            ),
+            Err(err) => ("Error".to_string(), format!("error saving: {}", err)),
+        };
+
+        Notification {
+            title,
+            message: Some(message),
+            bg,
+            text,
+        }
+    }
+
+    fn from_editor_status(status: &EditorStatus, bg: Hsla, text: Hsla) -> Self {
+        use helix_core::diagnostic::Severity;
+        let title = match status.severity {
+            Severity::Info => "info",
+            Severity::Hint => "hint",
+            Severity::Error => "error",
+            Severity::Warning => "warning",
+        }
+        .to_string();
+
+        Notification {
+            title,
+            message: Some(status.status.clone()),
+            bg,
+            text,
+        }
+    }
+
     fn from_lsp(status: &LspStatus, bg: Hsla, text: Hsla) -> Self {
         let title = format!(
             "{}: {} {}",
@@ -58,6 +95,8 @@ impl Notification {
 
 pub struct NotificationView {
     lsp_status: HashMap<LanguageServerId, LspStatus>,
+    editor_status: Option<crate::EditorStatus>,
+    saved: Option<Result<DocumentSavedEvent, String>>,
     popup_bg_color: Hsla,
     popup_text_color: Hsla,
 }
@@ -65,6 +104,8 @@ pub struct NotificationView {
 impl NotificationView {
     pub fn new(popup_bg_color: Hsla, popup_text_color: Hsla) -> Self {
         Self {
+            saved: None,
+            editor_status: None,
             lsp_status: HashMap::new(),
             popup_bg_color,
             popup_text_color,
@@ -134,6 +175,14 @@ impl NotificationView {
         use helix_view::editor::EditorEvent;
 
         info!("handling event {:?}", ev);
+        if let crate::Update::EditorStatus(status) = ev {
+            self.editor_status = status.clone();
+            cx.notify();
+        }
+        if let crate::Update::EditorEvent(EditorEvent::DocumentSaved(ev)) = ev {
+            self.saved = Some(ev.as_ref().map_err(|e| e.to_string()).map(|ok| ok.clone()));
+            cx.notify();
+        }
         if let crate::Update::EditorEvent(EditorEvent::LanguageServerMessage((id, call))) = ev {
             let ev = self.handle_lsp_call(*id, call);
             match ev {
@@ -178,6 +227,20 @@ impl Render for NotificationView {
                 self.popup_text_color,
             ));
         }
+        if let Some(status) = &self.editor_status {
+            notifications.push(Notification::from_editor_status(
+                &status,
+                self.popup_bg_color,
+                self.popup_text_color,
+            ));
+        }
+        if let Some(saved) = self.saved.take() {
+            notifications.push(Notification::from_save_event(
+                &saved,
+                self.popup_bg_color,
+                self.popup_text_color,
+            ));
+        }
         div()
             .absolute()
             .w(DefiniteLength::Fraction(0.33))
@@ -197,7 +260,7 @@ impl RenderOnce for Notification {
         div()
             .flex()
             .flex_col()
-            .flex_shrink()
+            .flex()
             .p_2()
             .gap_4()
             .min_h(px(100.))
