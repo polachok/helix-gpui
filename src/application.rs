@@ -1,7 +1,6 @@
 use arc_swap::{access::Map, ArcSwap};
-use std::{path::Path, sync::Arc};
-
 use helix_core::{pos_at_coords, syntax, Position, Selection};
+use std::{path::Path, sync::Arc};
 
 use helix_term::{
     args::Args, compositor::Compositor, config::Config, keymap::Keymaps, ui::EditorView,

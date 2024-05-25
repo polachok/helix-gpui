@@ -45,7 +45,82 @@ impl Workspace {
             view.subscribe(&editor, cx);
             view
         });
-        let jobs = cx.new_model(|_| Jobs::new());
+        let handle_1 = handle.clone();
+        let editor_1 = editor.clone();
+        let compositor_1 = compositor.clone();
+        let jobs = cx.new_model(move |mc| {
+            mc.spawn(|wm, mut cx| async move {
+                let _guard = handle_1.enter();
+                use futures_util::StreamExt;
+                let local = tokio::task::LocalSet::new();
+                local.run_until(async {
+                loop {
+                    let (_, rx) = tokio::sync::mpsc::channel(1);
+                    let timer = cx.background_executor()
+                        .timer(std::time::Duration::from_millis(50));
+                    if let Some(model) = wm.upgrade() {
+                        let (mut wait_futures, mut cbs) = cx
+                            .update_model(&model, |jobs: &mut Jobs, _cx| {
+                                let futures = std::mem::take(&mut jobs.wait_futures);
+                                let receiver = std::mem::replace(&mut jobs.callbacks, rx);
+                                (futures, receiver)
+                            })
+                            .unwrap();
+                        tokio::select! {
+                            Some(callback) = cbs.recv() => {
+                                let _ = cx.update_model(&model, |jobs: &mut Jobs, _cx| {
+                                        jobs.wait_futures = wait_futures;
+                                        jobs.callbacks = cbs;
+                                });
+                                
+                                let _ = cx.update_model(&model, |jobs: &mut Jobs, cx| {
+                                        println!("HANDLING CALLBACK FROM RECEIVER");
+                                        editor_1.update(cx, |editor, cx| {
+                                            let mut editor = editor.lock();
+                                            compositor_1.update(cx, |compositor, _cx| {
+                                                jobs.handle_callback(&mut editor, compositor, Ok(Some(callback)));
+                                            });
+                                        });
+                                });
+                            }
+                            Some(callback) = wait_futures.next() => {
+                                println!("job finished");
+                                if let Err(err) = &callback {
+                                    println!("job finished with error {:?}", err);
+                                }
+
+                                let _ = cx.update_model(&model, |jobs: &mut Jobs, _cx| {
+                                        jobs.wait_futures = wait_futures;
+                                        jobs.callbacks = cbs;
+                                });
+                                let _ = cx.update_model(&model, |jobs: &mut Jobs, cx| {
+                                        println!("HANDLING CALLBACK FROM FUTURE");
+                                        editor_1.update(cx, |editor, cx| {
+                                            let mut editor = editor.lock();
+                                            compositor_1.update(cx, |compositor, _cx| {
+                                                jobs.handle_callback(&mut editor, compositor, callback);
+                                            });
+                                        });
+                                });
+                            }
+                            _ = timer => {
+                                let _ = cx.update_model(&model, |jobs: &mut Jobs, _cx| {
+                                        jobs.wait_futures = wait_futures;
+                                        jobs.callbacks = cbs;
+                                });
+                                println!("timer finished");
+                            }
+                        }
+
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(1000)).await;
+                    }
+                }
+                }).await;
+            })
+            .detach();
+            Jobs::new()
+        });
 
         Self {
             editor,

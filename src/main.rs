@@ -1,6 +1,8 @@
+use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Error, Result};
+use helix_core::diagnostic::Severity;
 use helix_loader::VERSION_AND_GIT_HASH;
 use helix_term::args::Args;
 use helix_term::config::{Config, ConfigLoadError};
@@ -169,10 +171,19 @@ fn app_menus() -> Vec<Menu<'static>> {
     ]
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditorStatus {
     pub status: String,
-    pub severity: helix_core::diagnostic::Severity,
+    pub severity: Severity,
+}
+
+impl From<(&Cow<'_, str>, &Severity)> for EditorStatus {
+    fn from((status, severity): (&Cow<'_, str>, &Severity)) -> Self {
+        EditorStatus {
+            status: status.to_string(),
+            severity: *severity,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -212,42 +223,45 @@ fn gui_main(app: Application, handle: tokio::runtime::Handle) {
                 let handle_1 = handle_1.clone();
                 let model = editor_model.clone();
 
+                let mut status: Option<EditorStatus> = None;
+                let local = tokio::task::LocalSet::new();
                 async move {
-                    use std::time::Duration;
-                    let model = model.clone();
-                    let editor = editor_1.clone();
-                    let _guard = handle_1.enter();
-                    loop {
-                        let mut status = None;
-                        use futures_util::future::FutureExt;
-                        cx.background_executor()
-                            .timer(Duration::from_millis(100))
-                            .await;
-                        if let Some(mut editor) = editor.try_lock() {
-                            if let Some(event) = editor.wait_event().now_or_never() {
-                                let new_status = editor.get_status();
-                                if new_status != status {
-                                    status = new_status;
+                    local
+                        .run_until(async move {
+                            use std::time::Duration;
+                            let model = model.clone();
+                            let editor = editor_1.clone();
+                            let _guard = handle_1.enter();
+                            loop {
+                                use futures_util::future::FutureExt;
+                                cx.background_executor()
+                                    .timer(Duration::from_millis(100))
+                                    .await;
+                                if let Some(mut editor) = editor.try_lock() {
+                                    if let Some(event) = Some(editor.wait_event().await) {
+                                        println!("EVENT {:?}", event);
+                                        let new_status = editor.get_status().map(Into::into);
+                                        if new_status != status {
+                                            status = new_status;
 
-                                    let _ = cx.update_model(&model, |_, cx| {
-                                        let status =
-                                            status.map(|(status, severity)| EditorStatus {
-                                                status: status.to_string(),
-                                                severity: *severity,
+                                            let _ = cx.update_model(&model, |_, cx| {
+                                                cx.emit(Update::EditorStatus(status.clone()));
                                             });
-                                        cx.emit(Update::EditorStatus(status));
-                                    });
-                                }
-                                drop(editor);
-                                let _ = cx.update_model(&model, |_, cx| {
-                                    if !matches!(event, helix_view::editor::EditorEvent::IdleTimer)
-                                    {
-                                        cx.emit(Update::EditorEvent(event));
+                                        }
+                                        drop(editor);
+                                        let _ = cx.update_model(&model, |_, cx| {
+                                            if !matches!(
+                                                event,
+                                                helix_view::editor::EditorEvent::IdleTimer
+                                            ) {
+                                                cx.emit(Update::EditorEvent(event));
+                                            }
+                                        });
                                     }
-                                });
+                                }
                             }
-                        }
-                    }
+                        })
+                        .await
                 }
             })
             .detach();
