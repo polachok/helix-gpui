@@ -2,27 +2,21 @@ use std::collections::{HashMap, HashSet};
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use helix_term::compositor::Compositor;
-use helix_term::job::Jobs;
-use helix_term::ui::EditorView;
 use helix_view::ViewId;
-use log::{debug, info};
+use log::info;
 
 use crate::document::DocumentView;
 use crate::info_box::InfoBoxView;
 use crate::notification::NotificationView;
 use crate::overlay::OverlayView;
-use crate::prompt::Prompt;
 use crate::utils;
-use crate::EditorModel;
+use crate::{Core, InputEvent};
 
 pub struct Workspace {
-    editor: Model<EditorModel>,
-    view: Model<EditorView>,
-    jobs: Model<Jobs>,
+    core: Model<Core>,
+    input: tokio::sync::mpsc::Sender<InputEvent>,
     focused_view_id: Option<ViewId>,
     documents: HashMap<ViewId, View<DocumentView>>,
-    compositor: Model<Compositor>,
     handle: tokio::runtime::Handle,
     overlay: View<OverlayView>,
     info: View<InfoBoxView>,
@@ -32,103 +26,25 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new(
-        editor: Model<EditorModel>,
-        view: Model<EditorView>,
-        compositor: Model<Compositor>,
+        core: Model<Core>,
+        input: tokio::sync::mpsc::Sender<InputEvent>,
         handle: tokio::runtime::Handle,
         cx: &mut ViewContext<Self>,
     ) -> Self {
-        let notifications = Self::init_notifications(&editor, cx);
-        let info = Self::init_info_box(&editor, cx);
+        let notifications = Self::init_notifications(&core, cx);
+        let info = Self::init_info_box(&core, cx);
         let overlay = cx.new_view(|cx| {
             let view = OverlayView::new(&cx.focus_handle());
-            view.subscribe(&editor, cx);
+            view.subscribe(&core, cx);
             view
         });
         let handle_1 = handle.clone();
-        let editor_1 = editor.clone();
-        let compositor_1 = compositor.clone();
-        let jobs = cx.new_model(move |mc| {
-            mc.spawn(|wm, mut cx| async move {
-                let _guard = handle_1.enter();
-                use futures_util::StreamExt;
-                let local = tokio::task::LocalSet::new();
-                local.run_until(async {
-                loop {
-                    let (_, rx) = tokio::sync::mpsc::channel(1);
-                    let timer = cx.background_executor()
-                        .timer(std::time::Duration::from_millis(50));
-                    if let Some(model) = wm.upgrade() {
-                        let (mut wait_futures, mut cbs) = cx
-                            .update_model(&model, |jobs: &mut Jobs, _cx| {
-                                let futures = std::mem::take(&mut jobs.wait_futures);
-                                let receiver = std::mem::replace(&mut jobs.callbacks, rx);
-                                (futures, receiver)
-                            })
-                            .unwrap();
-                        tokio::select! {
-                            Some(callback) = cbs.recv() => {
-                                let _ = cx.update_model(&model, |jobs: &mut Jobs, _cx| {
-                                        jobs.wait_futures = wait_futures;
-                                        jobs.callbacks = cbs;
-                                });
-                                
-                                let _ = cx.update_model(&model, |jobs: &mut Jobs, cx| {
-                                        println!("HANDLING CALLBACK FROM RECEIVER");
-                                        editor_1.update(cx, |editor, cx| {
-                                            let mut editor = editor.lock();
-                                            compositor_1.update(cx, |compositor, _cx| {
-                                                jobs.handle_callback(&mut editor, compositor, Ok(Some(callback)));
-                                            });
-                                        });
-                                });
-                            }
-                            Some(callback) = wait_futures.next() => {
-                                println!("job finished");
-                                if let Err(err) = &callback {
-                                    println!("job finished with error {:?}", err);
-                                }
-
-                                let _ = cx.update_model(&model, |jobs: &mut Jobs, _cx| {
-                                        jobs.wait_futures = wait_futures;
-                                        jobs.callbacks = cbs;
-                                });
-                                let _ = cx.update_model(&model, |jobs: &mut Jobs, cx| {
-                                        println!("HANDLING CALLBACK FROM FUTURE");
-                                        editor_1.update(cx, |editor, cx| {
-                                            let mut editor = editor.lock();
-                                            compositor_1.update(cx, |compositor, _cx| {
-                                                jobs.handle_callback(&mut editor, compositor, callback);
-                                            });
-                                        });
-                                });
-                            }
-                            _ = timer => {
-                                let _ = cx.update_model(&model, |jobs: &mut Jobs, _cx| {
-                                        jobs.wait_futures = wait_futures;
-                                        jobs.callbacks = cbs;
-                                });
-                                println!("timer finished");
-                            }
-                        }
-
-                        cx.background_executor()
-                            .timer(std::time::Duration::from_millis(1000)).await;
-                    }
-                }
-                }).await;
-            })
-            .detach();
-            Jobs::new()
-        });
 
         Self {
-            editor,
-            view,
+            core,
+            input,
             focused_view_id: None,
-            compositor,
             handle,
-            jobs,
             overlay,
             info,
             info_hidden: true,
@@ -138,7 +54,7 @@ impl Workspace {
     }
 
     fn init_notifications(
-        editor: &Model<EditorModel>,
+        editor: &Model<Core>,
         cx: &mut ViewContext<Self>,
     ) -> View<NotificationView> {
         let theme = Self::theme(&editor, cx);
@@ -154,7 +70,7 @@ impl Workspace {
         })
     }
 
-    fn init_info_box(editor: &Model<EditorModel>, cx: &mut ViewContext<Self>) -> View<InfoBoxView> {
+    fn init_info_box(editor: &Model<Core>, cx: &mut ViewContext<Self>) -> View<InfoBoxView> {
         let theme = Self::theme(editor, cx);
         let text_style = theme.get("ui.text.info");
         let popup_style = theme.get("ui.popup.info");
@@ -183,8 +99,8 @@ impl Workspace {
         info
     }
 
-    pub fn theme(editor: &Model<EditorModel>, cx: &mut ViewContext<Self>) -> helix_view::Theme {
-        editor.read(cx).theme()
+    pub fn theme(editor: &Model<Core>, cx: &mut ViewContext<Self>) -> helix_view::Theme {
+        editor.read(cx).lock().unwrap().editor.theme.clone()
     }
 
     pub fn handle_event(&mut self, ev: &crate::Update, cx: &mut ViewContext<Self>) {
@@ -202,6 +118,11 @@ impl Workspace {
             }
             crate::Update::EditorStatus(_) => {}
             crate::Update::Redraw => {
+                if let Some(view) = self.focused_view_id.and_then(|id| self.documents.get(&id)) {
+                    view.update(cx, |_view, cx| {
+                        cx.notify();
+                    })
+                }
                 cx.notify();
             }
             crate::Update::Prompt(_) | crate::Update::Picker(_) => {
@@ -235,96 +156,16 @@ impl Workspace {
     fn handle_key(&mut self, ev: &KeyDownEvent, cx: &mut ViewContext<Self>) {
         println!("WORKSPACE KEY DOWN: {:?}", ev.keystroke);
 
-        let editor = self.editor.clone();
-        let jobs = self.jobs.clone();
-        let compositor = self.compositor.clone();
-        let rt_handle = self.handle.clone();
-        let view = self.view.clone();
-
         let key = utils::translate_key(&ev.keystroke);
-
-        editor.update(cx, |editor, cx| {
-            let _guard = rt_handle.enter();
-
-            let is_handled = jobs.update(cx, |mut jobs, cx| {
-                compositor.update(cx, |compositor, cx| {
-                    let mut editor = editor.lock();
-                    let mut comp_ctx = helix_term::compositor::Context {
-                        editor: &mut editor,
-                        scroll: None,
-                        jobs: &mut jobs,
-                    };
-                    let mut is_handled =
-                        compositor.handle_event(&helix_view::input::Event::Key(key), &mut comp_ctx);
-                    debug!("is handled by comp? {:?}", is_handled);
-
-                    if !is_handled {
-                        is_handled = view.update(cx, |view, _cx| {
-                            use helix_term::compositor::{Component, EventResult};
-                            let event = &helix_view::input::Event::Key(key);
-                            let res = view.handle_event(event, &mut comp_ctx);
-                            let is_handled = matches!(res, EventResult::Consumed(_));
-                            if let EventResult::Consumed(Some(cb)) = res {
-                                cb(compositor, &mut comp_ctx);
-                            }
-                            is_handled
-                        });
-                    }
-                    is_handled
-                })
-            });
-            debug!("is handled? {:?}", is_handled);
-            println!("KEY IS HANDLED ? {:?}", is_handled);
-
-            let (prompt, picker) = compositor.update(cx, |compositor, _cx| {
-                use crate::picker::Picker as PickerComponent;
-                use helix_term::ui::{overlay::Overlay, Picker};
-                use std::path::PathBuf;
-                let mut editor = editor.lock();
-
-                let picker = if let Some(p) =
-                    compositor.find_id::<Overlay<Picker<PathBuf>>>(helix_term::ui::picker::ID)
-                {
-                    println!("found file picker");
-                    Some(PickerComponent::make(&mut editor, &mut p.content))
-                } else {
-                    None
-                };
-                let prompt = if let Some(p) = compositor.find::<helix_term::ui::Prompt>() {
-                    Some(Prompt::make(&mut editor, p))
-                } else {
-                    None
-                };
-
-                (prompt, picker)
-            });
-
-            if let Some(picker) = picker {
-                cx.emit(crate::Update::Picker(picker));
-            }
-
-            if let Some(prompt) = prompt {
-                cx.emit(crate::Update::Prompt(prompt));
-            }
-
-            if let Some(info) = editor.lock().autoinfo.take() {
-                cx.emit(crate::Update::Info(info));
-            }
-            drop(_guard);
-        });
-        if let Some(view) = self.focused_view_id.and_then(|id| self.documents.get(&id)) {
-            view.update(cx, |_view, cx| {
-                cx.notify();
-            })
-        }
-        cx.notify();
+        self.input.blocking_send(InputEvent::Key(key)).unwrap();
     }
 }
 
 impl Render for Workspace {
     fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
-        let editor = self.editor.read(cx).clone();
-        let editor = editor.lock();
+        let core = self.core.read(cx).clone();
+        let core = core.lock().unwrap();
+        let editor = &core.editor;
 
         let default_style = editor.theme.get("ui.background");
         let default_ui_text = editor.theme.get("ui.text");
@@ -364,10 +205,11 @@ impl Render for Workspace {
                 ..Default::default()
             };
 
+            let core_1 = self.core.clone();
             let view = self.documents.entry(view_id).or_insert_with(|| {
                 cx.new_view(|cx| {
                     DocumentView::new(
-                        self.editor.clone(),
+                        core_1,
                         view_id,
                         style.clone(),
                         &cx.focus_handle(),
@@ -379,6 +221,7 @@ impl Render for Workspace {
                 view.set_focused(is_focused);
             });
         }
+
         use helix_view::tree::{ContainerItem, Layout};
         let mut containers = HashMap::new();
         let mut tree = HashMap::new();
@@ -417,8 +260,8 @@ impl Render for Workspace {
                 }
             }
         }
+        drop(core);
 
-        drop(editor);
         let to_remove = self
             .documents
             .keys()
@@ -473,11 +316,11 @@ impl Render for Workspace {
 
         println!("rendering workspace");
 
-        let compositor = self.compositor.clone();
-
-        compositor.update(cx, move |compositor, _cx| {
-            compositor.resize(editor_rect);
-        });
+        let core = self.core.read(cx);
+        let mut core = core.lock().unwrap();
+        let compositor = &mut core.compositor;
+        compositor.resize(editor_rect);
+        drop(core);
 
         if let Some(view) = &focused_view {
             cx.focus_view(view);
@@ -492,22 +335,22 @@ impl Render for Workspace {
             })
             .on_action({
                 let handle = self.handle.clone();
-                let editor = self.editor.clone();
+                let core = self.core.clone();
 
                 move |&crate::Quit, cx| {
                     eprintln!("quit?");
-                    quit(editor.clone(), handle.clone(), cx);
+                    quit(core.clone(), handle.clone(), cx);
                     eprintln!("quit!");
                     cx.quit();
                 }
             })
             .on_action({
                 let handle = self.handle.clone();
-                let editor = self.editor.clone();
+                let core = self.core.clone();
 
                 move |&crate::OpenFile, cx| {
                     info!("open file");
-                    open(editor.clone(), handle.clone(), cx)
+                    open(core.clone(), handle.clone(), cx)
                 }
             })
             .on_action(move |&crate::Hide, cx| cx.hide())
@@ -517,9 +360,9 @@ impl Render for Workspace {
             .on_action(move |&crate::Zoom, cx| cx.zoom_window())
             .on_action({
                 let handle = self.handle.clone();
-                let editor = self.editor.clone();
+                let core = self.core.clone();
                 cx.listener(move |_, &crate::Tutor, cx| {
-                    load_tutor(editor.clone(), handle.clone(), cx)
+                    load_tutor(core.clone(), handle.clone(), cx)
                 })
             })
             .id("workspace")
@@ -548,19 +391,17 @@ impl Render for Workspace {
     }
 }
 
-fn load_tutor(
-    editor: Model<EditorModel>,
-    handle: tokio::runtime::Handle,
-    cx: &mut ViewContext<Workspace>,
-) {
-    let _guard = handle.enter();
-    let mut editor = editor.read(cx).lock();
-    let _ = utils::load_tutor(&mut editor);
-    drop(editor);
-    cx.notify()
+fn load_tutor(core: Model<Core>, handle: tokio::runtime::Handle, cx: &mut ViewContext<Workspace>) {
+    core.update(cx, move |core, cx| {
+        let _guard = handle.enter();
+        let mut editor = &mut core.lock().unwrap().editor;
+        let _ = utils::load_tutor(&mut editor);
+        drop(editor);
+        cx.notify()
+    })
 }
 
-fn open(editor: Model<EditorModel>, handle: tokio::runtime::Handle, cx: &mut WindowContext) {
+fn open(core: Model<Core>, handle: tokio::runtime::Handle, cx: &mut WindowContext) {
     let path = cx.prompt_for_paths(PathPromptOptions {
         files: true,
         directories: false,
@@ -571,10 +412,10 @@ fn open(editor: Model<EditorModel>, handle: tokio::runtime::Handle, cx: &mut Win
             use helix_view::editor::Action;
             // TODO: handle errors
             cx.update(move |cx| {
-                editor.update(cx, move |editor, _cx| {
+                core.update(cx, move |editor, _cx| {
                     let path = &path[0];
                     let _guard = handle.enter();
-                    let mut editor = editor.lock();
+                    let editor = &mut editor.lock().unwrap().editor;
                     editor.open(path, Action::Replace).unwrap();
                 })
             })
@@ -584,9 +425,9 @@ fn open(editor: Model<EditorModel>, handle: tokio::runtime::Handle, cx: &mut Win
     .detach();
 }
 
-fn quit(editor: Model<EditorModel>, rt: tokio::runtime::Handle, cx: &mut WindowContext) {
-    editor.update(cx, |editor, _cx| {
-        let mut editor = editor.lock();
+fn quit(core: Model<Core>, rt: tokio::runtime::Handle, cx: &mut WindowContext) {
+    core.update(cx, |core, _cx| {
+        let editor = &mut core.lock().unwrap().editor;
         let _guard = rt.enter();
         rt.block_on(async { editor.flush_writes().await }).unwrap();
         let views: Vec<_> = editor.tree.views().map(|(view, _)| view.id).collect();

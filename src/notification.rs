@@ -164,7 +164,7 @@ impl NotificationView {
         ev
     }
 
-    pub fn subscribe(&self, editor: &Model<crate::EditorModel>, cx: &mut ViewContext<Self>) {
+    pub fn subscribe(&self, editor: &Model<crate::Core>, cx: &mut ViewContext<Self>) {
         cx.subscribe(editor, |this, _, ev, cx| {
             this.handle_event(ev, cx);
         })
@@ -176,7 +176,7 @@ impl NotificationView {
 
         info!("handling event {:?}", ev);
         if let crate::Update::EditorStatus(status) = ev {
-            self.editor_status = status.clone();
+            self.editor_status = Some(status.clone());
             cx.notify();
         }
         if let crate::Update::EditorEvent(EditorEvent::DocumentSaved(ev)) = ev {

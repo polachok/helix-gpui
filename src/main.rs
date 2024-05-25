@@ -1,19 +1,20 @@
-use std::borrow::Cow;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::Duration;
 
 use anyhow::{Context, Error, Result};
+use futures_util::future::FutureExt;
 use helix_core::diagnostic::Severity;
 use helix_loader::VERSION_AND_GIT_HASH;
 use helix_term::args::Args;
 use helix_term::config::{Config, ConfigLoadError};
-use helix_view::Editor;
 
 use gpui::{
     actions, App, AppContext, Context as _, Menu, MenuItem, TitlebarOptions, VisualContext as _,
     WindowBackgroundAppearance, WindowKind, WindowOptions,
 };
 
-use application::Application;
+use application::{Application, InputEvent};
 
 mod application;
 mod document;
@@ -26,25 +27,7 @@ mod statusline;
 mod utils;
 mod workspace;
 
-#[derive(Clone)]
-pub struct EditorModel {
-    inner: Arc<Mutex<Editor>>,
-}
-
-impl EditorModel {
-    pub fn lock(&self) -> std::sync::MutexGuard<Editor> {
-        self.inner.lock().unwrap()
-    }
-
-    pub fn try_lock(&self) -> Option<std::sync::MutexGuard<Editor>> {
-        self.inner.try_lock().ok()
-    }
-
-    pub fn theme(&self) -> helix_view::Theme {
-        let editor = self.lock();
-        editor.theme.clone()
-    }
-}
+pub type Core = Arc<Mutex<Application>>;
 
 fn setup_logging(verbosity: u64) -> Result<()> {
     let mut base_config = fern::Dispatch::new();
@@ -177,15 +160,6 @@ pub struct EditorStatus {
     pub severity: Severity,
 }
 
-impl From<(&Cow<'_, str>, &Severity)> for EditorStatus {
-    fn from((status, severity): (&Cow<'_, str>, &Severity)) -> Self {
-        EditorStatus {
-            status: status.to_string(),
-            severity: *severity,
-        }
-    }
-}
-
 #[derive(Debug)]
 pub enum Update {
     Redraw,
@@ -193,10 +167,10 @@ pub enum Update {
     Picker(picker::Picker),
     Info(helix_view::info::Info),
     EditorEvent(helix_view::editor::EditorEvent),
-    EditorStatus(Option<EditorStatus>),
+    EditorStatus(EditorStatus),
 }
 
-impl gpui::EventEmitter<Update> for EditorModel {}
+impl gpui::EventEmitter<Update> for Arc<Mutex<Application>> {}
 
 struct FontSettings {
     fixed_font: gpui::Font,
@@ -208,65 +182,37 @@ impl gpui::Global for FontSettings {}
 fn gui_main(app: Application, handle: tokio::runtime::Handle) {
     App::new().run(|cx: &mut AppContext| {
         let options = window_options(cx);
+        let (tx, rx) = tokio::sync::mpsc::channel(100);
+
+        let mut input_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
 
         cx.open_window(options, |cx| {
-            let editor = EditorModel {
-                inner: Arc::new(Mutex::new(app.editor)),
-            };
-            let editor_1 = editor.clone();
+            let app = Arc::new(Mutex::new(app));
 
-            let editor = cx.new_model(|_mc| editor);
-            let editor_model = editor.clone();
+            let app_1 = app.clone();
+            let app = cx.new_model(|_| app);
+            let model = app.clone();
+
             let handle_1 = handle.clone();
 
             cx.spawn(move |mut cx| {
-                let handle_1 = handle_1.clone();
-                let model = editor_model.clone();
-
-                let mut status: Option<EditorStatus> = None;
-                let local = tokio::task::LocalSet::new();
+                let app = app_1.clone();
                 async move {
-                    local
-                        .run_until(async move {
-                            use std::time::Duration;
-                            let model = model.clone();
-                            let editor = editor_1.clone();
-                            let _guard = handle_1.enter();
-                            loop {
-                                use futures_util::future::FutureExt;
-                                cx.background_executor()
-                                    .timer(Duration::from_millis(100))
-                                    .await;
-                                if let Some(mut editor) = editor.try_lock() {
-                                    if let Some(event) = Some(editor.wait_event().await) {
-                                        println!("EVENT {:?}", event);
-                                        let new_status = editor.get_status().map(Into::into);
-                                        if new_status != status {
-                                            status = new_status;
+                    loop {
+                        if let Ok(mut app) = app.try_lock() {
+                            let _ = cx.update_model(&model, |_, cx| {
+                                let _guard = handle_1.enter();
+                                app.step(&mut input_stream, cx).now_or_never()
+                            });
+                        }
 
-                                            let _ = cx.update_model(&model, |_, cx| {
-                                                cx.emit(Update::EditorStatus(status.clone()));
-                                            });
-                                        }
-                                        drop(editor);
-                                        let _ = cx.update_model(&model, |_, cx| {
-                                            if !matches!(
-                                                event,
-                                                helix_view::editor::EditorEvent::IdleTimer
-                                            ) {
-                                                cx.emit(Update::EditorEvent(event));
-                                            }
-                                        });
-                                    }
-                                }
-                            }
-                        })
-                        .await
+                        cx.background_executor()
+                            .timer(Duration::from_millis(50))
+                            .await;
+                    }
                 }
             })
             .detach();
-            let view = cx.new_model(|_mc| app.view);
-            let compositor = cx.new_model(|_mc| app.compositor);
 
             cx.activate(true);
             cx.set_menus(app_menus());
@@ -278,11 +224,11 @@ fn gui_main(app: Application, handle: tokio::runtime::Handle) {
             cx.set_global(font_settings);
 
             cx.new_view(|cx| {
-                cx.subscribe(&editor, |w: &mut workspace::Workspace, _, ev, cx| {
+                cx.subscribe(&app, |w: &mut workspace::Workspace, _, ev, cx| {
                     w.handle_event(ev, cx);
                 })
                 .detach();
-                workspace::Workspace::new(editor, view, compositor, handle, cx)
+                workspace::Workspace::new(app, tx.clone(), handle, cx)
             })
         });
     })
