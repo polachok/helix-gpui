@@ -27,7 +27,7 @@ impl InfoBoxView {
         }
     }
 
-    pub fn subscribe(&self, editor: &Model<crate::EditorModel>, cx: &mut ViewContext<Self>) {
+    pub fn subscribe(&self, editor: &Model<crate::Core>, cx: &mut ViewContext<Self>) {
         cx.subscribe(editor, |this, _, ev, cx| {
             this.handle_event(ev, cx);
         })

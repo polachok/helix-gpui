@@ -1,17 +1,18 @@
-use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context, Error, Result};
+use helix_core::diagnostic::Severity;
 use helix_loader::VERSION_AND_GIT_HASH;
 use helix_term::args::Args;
 use helix_term::config::{Config, ConfigLoadError};
-use helix_view::Editor;
 
 use gpui::{
     actions, App, AppContext, Context as _, Menu, MenuItem, TitlebarOptions, VisualContext as _,
     WindowBackgroundAppearance, WindowKind, WindowOptions,
 };
 
-use application::Application;
+pub use application::Input;
+use application::{Application, InputEvent};
 
 mod application;
 mod document;
@@ -24,25 +25,7 @@ mod statusline;
 mod utils;
 mod workspace;
 
-#[derive(Clone)]
-pub struct EditorModel {
-    inner: Arc<Mutex<Editor>>,
-}
-
-impl EditorModel {
-    pub fn lock(&self) -> std::sync::MutexGuard<Editor> {
-        self.inner.lock().unwrap()
-    }
-
-    pub fn try_lock(&self) -> Option<std::sync::MutexGuard<Editor>> {
-        self.inner.try_lock().ok()
-    }
-
-    pub fn theme(&self) -> helix_view::Theme {
-        let editor = self.lock();
-        editor.theme.clone()
-    }
-}
+pub type Core = Application;
 
 fn setup_logging(verbosity: u64) -> Result<()> {
     let mut base_config = fern::Dispatch::new();
@@ -169,6 +152,12 @@ fn app_menus() -> Vec<Menu<'static>> {
     ]
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditorStatus {
+    pub status: String,
+    pub severity: Severity,
+}
+
 #[derive(Debug)]
 pub enum Update {
     Redraw,
@@ -176,9 +165,10 @@ pub enum Update {
     Picker(picker::Picker),
     Info(helix_view::info::Info),
     EditorEvent(helix_view::editor::EditorEvent),
+    EditorStatus(EditorStatus),
 }
 
-impl gpui::EventEmitter<Update> for EditorModel {}
+impl gpui::EventEmitter<Update> for Application {}
 
 struct FontSettings {
     fixed_font: gpui::Font,
@@ -192,43 +182,42 @@ fn gui_main(app: Application, handle: tokio::runtime::Handle) {
         let options = window_options(cx);
 
         cx.open_window(options, |cx| {
-            let editor = EditorModel {
-                inner: Arc::new(Mutex::new(app.editor)),
-            };
-            let editor_1 = editor.clone();
-
-            let editor = cx.new_model(|_mc| editor);
-            let editor_model = editor.clone();
-            let handle_1 = handle.clone();
-
-            cx.spawn(move |mut cx| {
-                let handle_1 = handle_1.clone();
-                let model = editor_model.clone();
-
-                async move {
-                    use std::time::Duration;
-                    let model = model.clone();
-                    let editor = editor_1.clone();
-                    let _guard = handle_1.enter();
+            let input = cx.new_model(|_| crate::application::Input);
+            let crank = cx.new_model(|mc| {
+                mc.spawn(|crank, mut cx| async move {
                     loop {
-                        use futures_util::future::FutureExt;
                         cx.background_executor()
-                            .timer(Duration::from_millis(100))
+                            .timer(Duration::from_millis(50))
                             .await;
-                        if let Some(mut editor) = editor.try_lock() {
-                            if let Some(event) = editor.wait_event().now_or_never() {
-                                drop(editor);
-                                let _ = cx.update_model(&model, |_, cx| {
-                                    cx.emit(Update::EditorEvent(event));
-                                });
-                            }
-                        }
+                        let _ = crank.update(&mut cx, |_crank, cx| {
+                            cx.emit(());
+                        });
                     }
-                }
-            })
-            .detach();
-            let view = cx.new_model(|_mc| app.view);
-            let compositor = cx.new_model(|_mc| app.compositor);
+                })
+                .detach();
+                crate::application::Crank
+            });
+            let crank_1 = crank.clone();
+            std::mem::forget(crank_1);
+
+            let input_1 = input.clone();
+            let handle_1 = handle.clone();
+            let app = cx.new_model(move |mc| {
+                let handle_1 = handle_1.clone();
+                let handle_2 = handle_1.clone();
+                mc.subscribe(
+                    &input_1.clone(),
+                    move |this: &mut Application, _, ev, cx| {
+                        this.handle_input_event(ev.clone(), cx, handle_1.clone());
+                    },
+                )
+                .detach();
+                mc.subscribe(&crank, move |this: &mut Application, _, ev, cx| {
+                    this.handle_crank_event(*ev, cx, handle_2.clone());
+                })
+                .detach();
+                app
+            });
 
             cx.activate(true);
             cx.set_menus(app_menus());
@@ -239,12 +228,13 @@ fn gui_main(app: Application, handle: tokio::runtime::Handle) {
             };
             cx.set_global(font_settings);
 
+            let input_1 = input.clone();
             cx.new_view(|cx| {
-                cx.subscribe(&editor, |w: &mut workspace::Workspace, _, ev, cx| {
+                cx.subscribe(&app, |w: &mut workspace::Workspace, _, ev, cx| {
                     w.handle_event(ev, cx);
                 })
                 .detach();
-                workspace::Workspace::new(editor, view, compositor, handle, cx)
+                workspace::Workspace::new(app, input_1.clone(), handle, cx)
             })
         });
     })

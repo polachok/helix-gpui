@@ -1,19 +1,258 @@
-use arc_swap::{access::Map, ArcSwap};
 use std::{path::Path, sync::Arc};
 
+use arc_swap::{access::Map, ArcSwap};
+use futures_util::FutureExt;
+use helix_core::diagnostic::Severity;
 use helix_core::{pos_at_coords, syntax, Position, Selection};
 
+use helix_stdx::path::get_relative_path;
+use helix_term::job::Jobs;
 use helix_term::{
     args::Args, compositor::Compositor, config::Config, keymap::Keymaps, ui::EditorView,
 };
+use helix_view::document::DocumentSavedEventResult;
 use helix_view::{doc_mut, graphics::Rect, handlers::Handlers, theme, Editor};
 
 use anyhow::Error;
+use log::{debug, warn};
+use tokio_stream::StreamExt;
 
 pub struct Application {
     pub editor: Editor,
     pub compositor: Compositor,
     pub view: EditorView,
+    pub jobs: Jobs,
+}
+
+#[derive(Debug, Clone)]
+pub enum InputEvent {
+    Key(helix_view::input::KeyEvent),
+    ScrollLines {
+        line_count: usize,
+        direction: helix_core::movement::Direction,
+        view_id: helix_view::ViewId,
+    },
+}
+
+pub struct Input;
+
+impl gpui::EventEmitter<InputEvent> for Input {}
+
+pub struct Crank;
+
+impl gpui::EventEmitter<()> for Crank {}
+
+impl Application {
+    fn emit_overlays(&mut self, cx: &mut gpui::ModelContext<'_, crate::Core>) {
+        use crate::picker::Picker as PickerComponent;
+        use crate::prompt::Prompt;
+        use helix_term::ui::{overlay::Overlay, Picker};
+        use std::path::PathBuf;
+
+        let picker = if let Some(p) = self
+            .compositor
+            .find_id::<Overlay<Picker<PathBuf>>>(helix_term::ui::picker::ID)
+        {
+            println!("found file picker");
+            Some(PickerComponent::make(&mut self.editor, &mut p.content))
+        } else {
+            None
+        };
+        let prompt = if let Some(p) = self.compositor.find::<helix_term::ui::Prompt>() {
+            Some(Prompt::make(&mut self.editor, p))
+        } else {
+            None
+        };
+
+        if let Some(picker) = picker {
+            cx.emit(crate::Update::Picker(picker));
+        }
+
+        if let Some(prompt) = prompt {
+            cx.emit(crate::Update::Prompt(prompt));
+        }
+
+        if let Some(info) = self.editor.autoinfo.take() {
+            cx.emit(crate::Update::Info(info));
+        }
+    }
+
+    pub fn handle_input_event(
+        &mut self,
+        event: InputEvent,
+        cx: &mut gpui::ModelContext<'_, crate::Core>,
+        handle: tokio::runtime::Handle,
+    ) {
+        let _guard = handle.enter();
+        use helix_term::compositor::{Component, EventResult};
+        // println!("INPUT EVENT {:?}", event);
+
+        let mut comp_ctx = helix_term::compositor::Context {
+            editor: &mut self.editor,
+            scroll: None,
+            jobs: &mut self.jobs,
+        };
+        match event {
+            InputEvent::Key(key) => {
+                let mut is_handled = self
+                    .compositor
+                    .handle_event(&helix_view::input::Event::Key(key), &mut comp_ctx);
+                if !is_handled {
+                    let event = &helix_view::input::Event::Key(key);
+                    let res = self.view.handle_event(event, &mut comp_ctx);
+                    is_handled = matches!(res, EventResult::Consumed(_));
+                    if let EventResult::Consumed(Some(cb)) = res {
+                        cb(&mut self.compositor, &mut comp_ctx);
+                    }
+                }
+                let _is_handled = is_handled;
+                // println!("KEY IS HANDLED ? {:?}", is_handled);
+                self.emit_overlays(cx);
+                cx.emit(crate::Update::Redraw);
+            }
+            InputEvent::ScrollLines {
+                line_count,
+                direction,
+                ..
+            } => {
+                let mut ctx = helix_term::commands::Context {
+                    editor: &mut self.editor,
+                    register: None,
+                    count: None,
+                    callback: Vec::new(),
+                    on_next_key_callback: None,
+                    jobs: &mut self.jobs,
+                };
+                helix_term::commands::scroll(&mut ctx, line_count, direction, false);
+                cx.emit(crate::Update::Redraw);
+            }
+        }
+    }
+
+    fn handle_document_write(&mut self, doc_save_event: &DocumentSavedEventResult) {
+        let doc_save_event = match doc_save_event {
+            Ok(event) => event,
+            Err(err) => {
+                self.editor.set_error(err.to_string());
+                return;
+            }
+        };
+
+        let doc = match self.editor.document_mut(doc_save_event.doc_id) {
+            None => {
+                warn!(
+                    "received document saved event for non-existent doc id: {}",
+                    doc_save_event.doc_id
+                );
+
+                return;
+            }
+            Some(doc) => doc,
+        };
+
+        debug!(
+            "document {:?} saved with revision {}",
+            doc.path(),
+            doc_save_event.revision
+        );
+
+        doc.set_last_saved_revision(doc_save_event.revision);
+
+        let lines = doc_save_event.text.len_lines();
+        let bytes = doc_save_event.text.len_bytes();
+
+        self.editor
+            .set_doc_path(doc_save_event.doc_id, &doc_save_event.path);
+        // TODO: fix being overwritten by lsp
+        self.editor.set_status(format!(
+            "'{}' written, {}L {}B",
+            get_relative_path(&doc_save_event.path).to_string_lossy(),
+            lines,
+            bytes
+        ));
+    }
+
+    pub fn handle_crank_event(
+        &mut self,
+        _event: (),
+        cx: &mut gpui::ModelContext<'_, crate::Core>,
+        handle: tokio::runtime::Handle,
+    ) {
+        let _guard = handle.enter();
+
+        self.step(cx).now_or_never();
+        /*
+        use std::future::Future;
+        let fut = self.step(cx);
+        let mut fut = Box::pin(fut);
+        handle.block_on(std::future::poll_fn(move |cx| {
+            let _ = fut.as_mut().poll(cx);
+            Poll::Ready(())
+        }));
+        */
+    }
+
+    pub async fn step(&mut self, cx: &mut gpui::ModelContext<'_, crate::Core>) {
+        loop {
+            tokio::select! {
+                biased;
+
+                // Some(event) = input_stream.next() => {
+                //     // self.handle_input_event(event, cx);
+                //     //self.handle_terminal_events(event).await;
+                // }
+                Some(callback) = self.jobs.callbacks.recv() => {
+                    self.jobs.handle_callback(&mut self.editor, &mut self.compositor, Ok(Some(callback)));
+                    // self.render().await;
+                }
+                Some(msg) = self.jobs.status_messages.recv() => {
+                    let severity = match msg.severity{
+                        helix_event::status::Severity::Hint => Severity::Hint,
+                        helix_event::status::Severity::Info => Severity::Info,
+                        helix_event::status::Severity::Warning => Severity::Warning,
+                        helix_event::status::Severity::Error => Severity::Error,
+                    };
+                    let status = crate::EditorStatus { status: msg.message.to_string(), severity };
+                    cx.emit(crate::Update::EditorStatus(status));
+                    // TODO: show multiple status messages at once to avoid clobbering
+                    self.editor.status_msg = Some((msg.message, severity));
+                    helix_event::request_redraw();
+                }
+                Some(callback) = self.jobs.wait_futures.next() => {
+                    self.jobs.handle_callback(&mut self.editor, &mut self.compositor, callback);
+                    // self.render().await;
+                }
+                event = self.editor.wait_event() => {
+                    use helix_view::editor::EditorEvent;
+                    match event {
+                        EditorEvent::DocumentSaved(event) => {
+                            self.handle_document_write(&event);
+                            cx.emit(crate::Update::EditorEvent(EditorEvent::DocumentSaved(event)));
+                        }
+                        EditorEvent::IdleTimer => {
+                            self.editor.clear_idle_timer();
+                            /* dont send */
+                        }
+                        EditorEvent::Redraw => {
+                             cx.emit(crate::Update::EditorEvent(EditorEvent::Redraw));
+                        }
+                        EditorEvent::ConfigEvent(_) => {
+                            /* TODO */
+                        }
+                        EditorEvent::LanguageServerMessage(_) => {
+                            /* TODO */
+                        }
+                        EditorEvent::DebuggerEvent(_) => {
+                            /* TODO */
+                        }
+                    }
+                }
+                else => {
+                    break;
+                }
+            }
+        }
+    }
 }
 
 pub fn init_editor(
@@ -100,6 +339,7 @@ pub fn init_editor(
     });
     let keymaps = Keymaps::new(keys);
     let view = EditorView::new(keymaps);
+    let jobs = Jobs::new();
 
     helix_term::events::register();
 
@@ -107,5 +347,6 @@ pub fn init_editor(
         editor,
         compositor,
         view,
+        jobs,
     })
 }

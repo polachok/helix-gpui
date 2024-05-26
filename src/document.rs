@@ -10,10 +10,11 @@ use helix_view::{graphics::CursorKind, Document, DocumentId, Editor, Theme, View
 use log::debug;
 
 use crate::utils::color_to_hsla;
-use crate::EditorModel;
+use crate::{Core, Input, InputEvent};
 
 pub struct DocumentView {
-    editor: Model<EditorModel>,
+    core: Model<Core>,
+    input: Model<Input>,
     view_id: ViewId,
     style: TextStyle,
     focus: FocusHandle,
@@ -22,14 +23,16 @@ pub struct DocumentView {
 
 impl DocumentView {
     pub fn new(
-        editor: Model<EditorModel>,
+        core: Model<Core>,
+        input: Model<Input>,
         view_id: ViewId,
         style: TextStyle,
         focus: &FocusHandle,
         is_focused: bool,
     ) -> Self {
         Self {
-            editor,
+            core,
+            input,
             view_id,
             style,
             focus: focus.clone(),
@@ -47,7 +50,6 @@ impl EventEmitter<DismissEvent> for DocumentView {}
 impl Render for DocumentView {
     fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
         println!("{:?}: rendering document view", self.view_id);
-        let editor = self.editor.clone();
 
         cx.on_focus_out(&self.focus, |this, cx| {
             let is_focused = this.focus.is_focused(cx);
@@ -78,14 +80,14 @@ impl Render for DocumentView {
         .detach();
 
         let doc_id = {
-            let editor = self.editor.read(cx).lock();
+            let editor = &self.core.read(cx).editor;
             let view = editor.tree.get(self.view_id);
             view.doc
         };
 
         let handle = ScrollHandle::default();
         let doc = DocumentElement::new(
-            self.editor.clone(),
+            self.core.clone(),
             doc_id.clone(),
             self.view_id.clone(),
             self.style.clone(),
@@ -94,10 +96,10 @@ impl Render for DocumentView {
         )
         .overflow_y_scroll()
         .track_scroll(&handle)
-        .on_scroll_wheel(cx.listener(move |v, ev: &ScrollWheelEvent, cx| {
-            let view_id = v.view_id;
-            let line_height = v.style.line_height_in_pixels(cx.rem_size());
+        .on_scroll_wheel(cx.listener(move |view, ev: &ScrollWheelEvent, cx| {
             use helix_core::movement::Direction;
+            let view_id = view.view_id;
+            let line_height = view.style.line_height_in_pixels(cx.rem_size());
 
             debug!("SCROLL WHEEL {:?}", ev);
             let delta = ev.delta.pixel_delta(line_height);
@@ -110,27 +112,18 @@ impl Render for DocumentView {
                 };
                 let line_count = 1 + lines.abs() as usize;
 
-                // println!("{:?}", line_count);
-                editor.update(cx, |editor, _cx| {
-                    let mut editor = editor.lock();
-                    let mut ctx = helix_term::commands::Context {
-                        editor: &mut editor,
-                        register: None,
-                        count: None,
-                        callback: Vec::new(),
-                        on_next_key_callback: None,
-                        jobs: &mut helix_term::job::Jobs::new(),
-                    };
-                    helix_term::commands::scroll(&mut ctx, line_count, direction, false);
-
-                    editor.ensure_cursor_in_view(view_id);
+                view.input.update(cx, |_, cx| {
+                    cx.emit(InputEvent::ScrollLines {
+                        direction,
+                        line_count,
+                        view_id,
+                    })
                 });
-                cx.notify();
             }
         }));
 
         let status = crate::statusline::StatusLine::new(
-            self.editor.clone(),
+            self.core.clone(),
             doc_id.clone(),
             self.view_id,
             self.is_focused,
@@ -154,7 +147,7 @@ impl FocusableView for DocumentView {
 }
 
 pub struct DocumentElement {
-    editor: Model<EditorModel>,
+    core: Model<Core>,
     doc_id: DocumentId,
     view_id: ViewId,
     style: TextStyle,
@@ -173,7 +166,7 @@ impl IntoElement for DocumentElement {
 
 impl DocumentElement {
     pub fn new(
-        editor: Model<EditorModel>,
+        core: Model<Core>,
         doc_id: DocumentId,
         view_id: ViewId,
         style: TextStyle,
@@ -181,7 +174,7 @@ impl DocumentElement {
         is_focused: bool,
     ) -> Self {
         Self {
-            editor,
+            core,
             doc_id,
             view_id,
             style,
@@ -422,7 +415,7 @@ impl Element for DocumentElement {
         cx: &mut WindowContext,
     ) -> Self::PrepaintState {
         debug!("editor bounds {:?}", bounds);
-        let editor = self.editor.clone();
+        let core = self.core.clone();
         self.interactivity
             .prepaint(id, bounds, bounds.size, cx, |_, _, hitbox, cx| {
                 cx.with_content_mask(Some(ContentMask { bounds }), |cx| {
@@ -443,14 +436,14 @@ impl Element for DocumentElement {
                     let columns = (bounds.size.width / em_width).floor() as usize;
                     let rows = (bounds.size.height / line_height).floor() as usize;
 
-                    editor.update(cx, |editor, _cx| {
+                    core.update(cx, |core, _cx| {
                         let rect = helix_view::graphics::Rect {
                             x: 0,
                             y: 0,
                             width: columns as u16,
                             height: rows as u16,
                         };
-                        let mut editor = editor.lock();
+                        let editor = &mut core.editor;
                         editor.resize(rect)
                     });
                     DocumentLayout {
@@ -484,9 +477,8 @@ impl Element for DocumentElement {
 
         self.interactivity
             .paint(id, bounds, after_layout.hitbox.as_ref(), cx, |_, cx| {
-                let editor = self.editor.read(cx);
-                let editor = editor.clone();
-                let editor = editor.lock();
+                let core = self.core.read(cx);
+                let editor = &core.editor;
 
                 let view = editor.tree.get(self.view_id);
                 let _viewport = view.area;
@@ -545,7 +537,6 @@ impl Element for DocumentElement {
                     fg_color,
                     self.style.font(),
                 );
-                drop(editor);
                 let shaped_lines = cx
                     .text_system()
                     .shape_text(str, after_layout.font_size, &runs, None)
@@ -595,8 +586,8 @@ impl Element for DocumentElement {
                 }
                 // draw gutter
                 {
-                    let editor = self.editor.read(cx).clone();
-                    let editor = editor.lock();
+                    let core = self.core.read(cx);
+                    let editor = &core.editor;
                     let theme = &editor.theme;
                     let view = editor.tree.get(self.view_id);
                     let document = editor.document(self.doc_id).unwrap();

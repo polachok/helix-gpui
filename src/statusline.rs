@@ -1,11 +1,11 @@
 use crate::utils::color_to_hsla;
-use crate::EditorModel;
+use crate::Core;
 use gpui::*;
 use helix_view::{DocumentId, ViewId};
 
 #[derive(IntoElement)]
 pub struct StatusLine {
-    editor: Model<EditorModel>,
+    core: Model<Core>,
     doc_id: DocumentId,
     view_id: ViewId,
     focused: bool,
@@ -14,14 +14,14 @@ pub struct StatusLine {
 
 impl StatusLine {
     pub fn new(
-        editor: Model<EditorModel>,
+        core: Model<Core>,
         doc_id: DocumentId,
         view_id: ViewId,
         focused: bool,
         style: TextStyle,
     ) -> Self {
         Self {
-            editor,
+            core,
             doc_id,
             view_id,
             focused,
@@ -30,7 +30,7 @@ impl StatusLine {
     }
 
     fn style(&self, cx: &mut WindowContext<'_>) -> (Hsla, Hsla) {
-        let editor = self.editor.read(cx).lock();
+        let editor = &self.core.read(cx).editor;
         let base_style = if self.focused {
             editor.theme.get("ui.statusline")
         } else {
@@ -54,7 +54,7 @@ impl StatusLine {
         base_bg: Hsla,
     ) -> (StyledText, StyledText, StyledText) {
         use self::copy_pasta::{render_status_parts, RenderContext};
-        let editor = self.editor.read(cx).lock();
+        let editor = &self.core.read(cx).editor;
         let doc = editor.document(self.doc_id).unwrap();
         let view = editor.tree.get(self.view_id);
 
