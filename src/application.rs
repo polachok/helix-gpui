@@ -1,7 +1,7 @@
 use std::{path::Path, sync::Arc};
 
 use arc_swap::{access::Map, ArcSwap};
-use futures_util::stream::Stream;
+use futures_util::FutureExt;
 use helix_core::diagnostic::Severity;
 use helix_core::{pos_at_coords, syntax, Position, Selection};
 
@@ -24,14 +24,23 @@ pub struct Application {
     pub jobs: Jobs,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum InputEvent {
     Key(helix_view::input::KeyEvent),
     ScrollLines {
         line_count: usize,
         direction: helix_core::movement::Direction,
+        view_id: helix_view::ViewId,
     },
 }
+
+pub struct Input;
+
+impl gpui::EventEmitter<InputEvent> for Input {}
+
+pub struct Crank;
+
+impl gpui::EventEmitter<()> for Crank {}
 
 impl Application {
     fn emit_overlays(&mut self, cx: &mut gpui::ModelContext<'_, crate::Core>) {
@@ -68,11 +77,13 @@ impl Application {
         }
     }
 
-    fn handle_input_event(
+    pub fn handle_input_event(
         &mut self,
         event: InputEvent,
         cx: &mut gpui::ModelContext<'_, crate::Core>,
+        handle: tokio::runtime::Handle,
     ) {
+        let _guard = handle.enter();
         use helix_term::compositor::{Component, EventResult};
         // println!("INPUT EVENT {:?}", event);
 
@@ -99,11 +110,26 @@ impl Application {
                 self.emit_overlays(cx);
                 cx.emit(crate::Update::Redraw);
             }
-            InputEvent::ScrollLines { .. } => {}
+            InputEvent::ScrollLines {
+                line_count,
+                direction,
+                ..
+            } => {
+                let mut ctx = helix_term::commands::Context {
+                    editor: &mut self.editor,
+                    register: None,
+                    count: None,
+                    callback: Vec::new(),
+                    on_next_key_callback: None,
+                    jobs: &mut self.jobs,
+                };
+                helix_term::commands::scroll(&mut ctx, line_count, direction, false);
+                cx.emit(crate::Update::Redraw);
+            }
         }
     }
 
-    pub fn handle_document_write(&mut self, doc_save_event: &DocumentSavedEventResult) {
+    fn handle_document_write(&mut self, doc_save_event: &DocumentSavedEventResult) {
         let doc_save_event = match doc_save_event {
             Ok(event) => event,
             Err(err) => {
@@ -146,21 +172,35 @@ impl Application {
         ));
     }
 
-    pub async fn step<S>(
+    pub fn handle_crank_event(
         &mut self,
-        input_stream: &mut S,
+        _event: (),
         cx: &mut gpui::ModelContext<'_, crate::Core>,
-    ) where
-        S: Stream<Item = InputEvent> + Unpin,
-    {
+        handle: tokio::runtime::Handle,
+    ) {
+        let _guard = handle.enter();
+
+        self.step(cx).now_or_never();
+        /*
+        use std::future::Future;
+        let fut = self.step(cx);
+        let mut fut = Box::pin(fut);
+        handle.block_on(std::future::poll_fn(move |cx| {
+            let _ = fut.as_mut().poll(cx);
+            Poll::Ready(())
+        }));
+        */
+    }
+
+    pub async fn step(&mut self, cx: &mut gpui::ModelContext<'_, crate::Core>) {
         loop {
             tokio::select! {
                 biased;
 
-                Some(event) = input_stream.next() => {
-                    self.handle_input_event(event, cx);
-                    //self.handle_terminal_events(event).await;
-                }
+                // Some(event) = input_stream.next() => {
+                //     // self.handle_input_event(event, cx);
+                //     //self.handle_terminal_events(event).await;
+                // }
                 Some(callback) = self.jobs.callbacks.recv() => {
                     self.jobs.handle_callback(&mut self.editor, &mut self.compositor, Ok(Some(callback)));
                     // self.render().await;
@@ -184,7 +224,6 @@ impl Application {
                 }
                 event = self.editor.wait_event() => {
                     use helix_view::editor::EditorEvent;
-                    // println!("editor event {:?}", event);
                     match event {
                         EditorEvent::DocumentSaved(event) => {
                             self.handle_document_write(&event);
@@ -208,7 +247,9 @@ impl Application {
                         }
                     }
                 }
-                else => break,
+                else => {
+                    break;
+                }
             }
         }
     }

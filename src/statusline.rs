@@ -30,7 +30,7 @@ impl StatusLine {
     }
 
     fn style(&self, cx: &mut WindowContext<'_>) -> (Hsla, Hsla) {
-        let editor = &self.core.read(cx).lock().unwrap().editor;
+        let editor = &self.core.read(cx).editor;
         let base_style = if self.focused {
             editor.theme.get("ui.statusline")
         } else {
@@ -54,7 +54,7 @@ impl StatusLine {
         base_bg: Hsla,
     ) -> (StyledText, StyledText, StyledText) {
         use self::copy_pasta::{render_status_parts, RenderContext};
-        let editor = &self.core.read(cx).lock().unwrap().editor;
+        let editor = &self.core.read(cx).editor;
         let doc = editor.document(self.doc_id).unwrap();
         let view = editor.tree.get(self.view_id);
 

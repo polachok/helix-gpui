@@ -1,9 +1,6 @@
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{Context, Error, Result};
-use futures_util::future::FutureExt;
 use helix_core::diagnostic::Severity;
 use helix_loader::VERSION_AND_GIT_HASH;
 use helix_term::args::Args;
@@ -14,6 +11,7 @@ use gpui::{
     WindowBackgroundAppearance, WindowKind, WindowOptions,
 };
 
+pub use application::Input;
 use application::{Application, InputEvent};
 
 mod application;
@@ -27,7 +25,7 @@ mod statusline;
 mod utils;
 mod workspace;
 
-pub type Core = Arc<Mutex<Application>>;
+pub type Core = Application;
 
 fn setup_logging(verbosity: u64) -> Result<()> {
     let mut base_config = fern::Dispatch::new();
@@ -170,7 +168,7 @@ pub enum Update {
     EditorStatus(EditorStatus),
 }
 
-impl gpui::EventEmitter<Update> for Arc<Mutex<Application>> {}
+impl gpui::EventEmitter<Update> for Application {}
 
 struct FontSettings {
     fixed_font: gpui::Font,
@@ -182,37 +180,44 @@ impl gpui::Global for FontSettings {}
 fn gui_main(app: Application, handle: tokio::runtime::Handle) {
     App::new().run(|cx: &mut AppContext| {
         let options = window_options(cx);
-        let (tx, rx) = tokio::sync::mpsc::channel(100);
-
-        let mut input_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
 
         cx.open_window(options, |cx| {
-            let app = Arc::new(Mutex::new(app));
-
-            let app_1 = app.clone();
-            let app = cx.new_model(|_| app);
-            let model = app.clone();
-
-            let handle_1 = handle.clone();
-
-            cx.spawn(move |mut cx| {
-                let app = app_1.clone();
-                async move {
+            let input = cx.new_model(|_| crate::application::Input);
+            let crank = cx.new_model(|mc| {
+                mc.spawn(|crank, mut cx| async move {
                     loop {
-                        if let Ok(mut app) = app.try_lock() {
-                            let _ = cx.update_model(&model, |_, cx| {
-                                let _guard = handle_1.enter();
-                                app.step(&mut input_stream, cx).now_or_never()
-                            });
-                        }
-
                         cx.background_executor()
                             .timer(Duration::from_millis(50))
                             .await;
+                        let _ = crank.update(&mut cx, |_crank, cx| {
+                            cx.emit(());
+                        });
                     }
-                }
-            })
-            .detach();
+                })
+                .detach();
+                crate::application::Crank
+            });
+            let crank_1 = crank.clone();
+            std::mem::forget(crank_1);
+
+            let input_1 = input.clone();
+            let handle_1 = handle.clone();
+            let app = cx.new_model(move |mc| {
+                let handle_1 = handle_1.clone();
+                let handle_2 = handle_1.clone();
+                mc.subscribe(
+                    &input_1.clone(),
+                    move |this: &mut Application, _, ev, cx| {
+                        this.handle_input_event(ev.clone(), cx, handle_1.clone());
+                    },
+                )
+                .detach();
+                mc.subscribe(&crank, move |this: &mut Application, _, ev, cx| {
+                    this.handle_crank_event(*ev, cx, handle_2.clone());
+                })
+                .detach();
+                app
+            });
 
             cx.activate(true);
             cx.set_menus(app_menus());
@@ -223,12 +228,13 @@ fn gui_main(app: Application, handle: tokio::runtime::Handle) {
             };
             cx.set_global(font_settings);
 
+            let input_1 = input.clone();
             cx.new_view(|cx| {
                 cx.subscribe(&app, |w: &mut workspace::Workspace, _, ev, cx| {
                     w.handle_event(ev, cx);
                 })
                 .detach();
-                workspace::Workspace::new(app, tx.clone(), handle, cx)
+                workspace::Workspace::new(app, input_1.clone(), handle, cx)
             })
         });
     })

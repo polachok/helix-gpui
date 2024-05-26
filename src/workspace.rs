@@ -10,11 +10,11 @@ use crate::info_box::InfoBoxView;
 use crate::notification::NotificationView;
 use crate::overlay::OverlayView;
 use crate::utils;
-use crate::{Core, InputEvent};
+use crate::{Core, Input, InputEvent};
 
 pub struct Workspace {
     core: Model<Core>,
-    input: tokio::sync::mpsc::Sender<InputEvent>,
+    input: Model<Input>,
     focused_view_id: Option<ViewId>,
     documents: HashMap<ViewId, View<DocumentView>>,
     handle: tokio::runtime::Handle,
@@ -27,7 +27,7 @@ pub struct Workspace {
 impl Workspace {
     pub fn new(
         core: Model<Core>,
-        input: tokio::sync::mpsc::Sender<InputEvent>,
+        input: Model<Input>,
         handle: tokio::runtime::Handle,
         cx: &mut ViewContext<Self>,
     ) -> Self {
@@ -38,7 +38,6 @@ impl Workspace {
             view.subscribe(&core, cx);
             view
         });
-        let handle_1 = handle.clone();
 
         Self {
             core,
@@ -100,7 +99,7 @@ impl Workspace {
     }
 
     pub fn theme(editor: &Model<Core>, cx: &mut ViewContext<Self>) -> helix_view::Theme {
-        editor.read(cx).lock().unwrap().editor.theme.clone()
+        editor.read(cx).editor.theme.clone()
     }
 
     pub fn handle_event(&mut self, ev: &crate::Update, cx: &mut ViewContext<Self>) {
@@ -157,31 +156,21 @@ impl Workspace {
         println!("WORKSPACE KEY DOWN: {:?}", ev.keystroke);
 
         let key = utils::translate_key(&ev.keystroke);
-        self.input.blocking_send(InputEvent::Key(key)).unwrap();
+        self.input.update(cx, |_, cx| {
+            cx.emit(InputEvent::Key(key));
+        })
     }
-}
 
-impl Render for Workspace {
-    fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
-        let core = self.core.read(cx).clone();
-        let core = core.lock().unwrap();
-        let editor = &core.editor;
-
-        let default_style = editor.theme.get("ui.background");
-        let default_ui_text = editor.theme.get("ui.text");
-        let bg_color = utils::color_to_hsla(default_style.bg.unwrap()).unwrap_or(black());
-        let text_color = utils::color_to_hsla(default_ui_text.fg.unwrap()).unwrap_or(white());
-        let window_style = editor.theme.get("ui.window");
-        let border_color = utils::color_to_hsla(window_style.fg.unwrap()).unwrap_or(white());
-
-        let editor_rect = editor.tree.area();
-
+    fn make_views(
+        &mut self,
+        view_ids: &mut HashSet<ViewId>,
+        right_borders: &mut HashSet<ViewId>,
+        cx: &mut ViewContext<Self>,
+    ) -> Option<String> {
+        let editor = &self.core.read(cx).editor;
         let mut focused_file_name = None;
-        let mut view_ids = HashSet::new();
-        let mut right_borders = HashSet::new();
 
         for (view, is_focused) in editor.tree.views() {
-            let doc = editor.document(view.doc).unwrap();
             let view_id = view.id;
 
             if editor
@@ -195,21 +184,27 @@ impl Render for Workspace {
             view_ids.insert(view_id);
 
             if is_focused {
+                let doc = editor.document(view.doc).unwrap();
                 self.focused_view_id = Some(view_id);
                 focused_file_name = doc.path().map(|p| p.display().to_string());
             }
+        }
 
+        for view_id in view_ids.iter() {
+            let view_id = *view_id;
+            let is_focused = self.focused_view_id == Some(view_id);
             let style = TextStyle {
                 font_family: cx.global::<crate::FontSettings>().fixed_font.family.clone(),
                 font_size: px(14.0).into(),
                 ..Default::default()
             };
-
-            let core_1 = self.core.clone();
+            let core = self.core.clone();
+            let input = self.input.clone();
             let view = self.documents.entry(view_id).or_insert_with(|| {
                 cx.new_view(|cx| {
                     DocumentView::new(
-                        core_1,
+                        core,
+                        input,
                         view_id,
                         style.clone(),
                         &cx.focus_handle(),
@@ -221,12 +216,34 @@ impl Render for Workspace {
                 view.set_focused(is_focused);
             });
         }
+        focused_file_name
+    }
+}
+
+impl Render for Workspace {
+    fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
+        let mut view_ids = HashSet::new();
+        let mut right_borders = HashSet::new();
+
+        let focused_file_name = self.make_views(&mut view_ids, &mut right_borders, cx);
+
+        let editor = &self.core.read(cx).editor;
+
+        let default_style = editor.theme.get("ui.background");
+        let default_ui_text = editor.theme.get("ui.text");
+        let bg_color = utils::color_to_hsla(default_style.bg.unwrap()).unwrap_or(black());
+        let text_color = utils::color_to_hsla(default_ui_text.fg.unwrap()).unwrap_or(white());
+        let window_style = editor.theme.get("ui.window");
+        let border_color = utils::color_to_hsla(window_style.fg.unwrap()).unwrap_or(white());
+
+        let editor_rect = editor.tree.area();
 
         use helix_view::tree::{ContainerItem, Layout};
         let mut containers = HashMap::new();
         let mut tree = HashMap::new();
         let mut root_id = None;
 
+        let editor = &self.core.read(cx).editor;
         for item in editor.tree.traverse_containers() {
             match item {
                 ContainerItem::Container { id, parent, layout } => {
@@ -260,7 +277,6 @@ impl Render for Workspace {
                 }
             }
         }
-        drop(core);
 
         let to_remove = self
             .documents
@@ -316,11 +332,9 @@ impl Render for Workspace {
 
         println!("rendering workspace");
 
-        let core = self.core.read(cx);
-        let mut core = core.lock().unwrap();
-        let compositor = &mut core.compositor;
-        compositor.resize(editor_rect);
-        drop(core);
+        self.core.update(cx, |core, _cx| {
+            core.compositor.resize(editor_rect);
+        });
 
         if let Some(view) = &focused_view {
             cx.focus_view(view);
@@ -394,9 +408,7 @@ impl Render for Workspace {
 fn load_tutor(core: Model<Core>, handle: tokio::runtime::Handle, cx: &mut ViewContext<Workspace>) {
     core.update(cx, move |core, cx| {
         let _guard = handle.enter();
-        let mut editor = &mut core.lock().unwrap().editor;
-        let _ = utils::load_tutor(&mut editor);
-        drop(editor);
+        let _ = utils::load_tutor(&mut core.editor);
         cx.notify()
     })
 }
@@ -412,10 +424,10 @@ fn open(core: Model<Core>, handle: tokio::runtime::Handle, cx: &mut WindowContex
             use helix_view::editor::Action;
             // TODO: handle errors
             cx.update(move |cx| {
-                core.update(cx, move |editor, _cx| {
+                core.update(cx, move |core, _cx| {
                     let path = &path[0];
                     let _guard = handle.enter();
-                    let editor = &mut editor.lock().unwrap().editor;
+                    let editor = &mut core.editor;
                     editor.open(path, Action::Replace).unwrap();
                 })
             })
@@ -427,7 +439,7 @@ fn open(core: Model<Core>, handle: tokio::runtime::Handle, cx: &mut WindowContex
 
 fn quit(core: Model<Core>, rt: tokio::runtime::Handle, cx: &mut WindowContext) {
     core.update(cx, |core, _cx| {
-        let editor = &mut core.lock().unwrap().editor;
+        let editor = &mut core.editor;
         let _guard = rt.enter();
         rt.block_on(async { editor.flush_writes().await }).unwrap();
         let views: Vec<_> = editor.tree.views().map(|(view, _)| view.id).collect();
