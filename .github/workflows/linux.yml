@@ -1,0 +1,35 @@
+name: Build for linux
+on: [pull_request]
+
+jobs:
+  check:
+    name: cargo check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo check
+  
+  test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: libxkbcommon-dev libxkbcommon-x11-dev
+          version: 1.0
+      - run: cargo test
+
+  build:
+    name: cargo build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: libxkbcommon-dev libxkbcommon-x11-dev
+          version: 1.0
+      - run: cargo build --release
