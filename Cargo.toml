@@ -1,7 +1,7 @@
 [package]
 name = "helix-gpui"
 edition = "2021"
-authors = ["Alexander Polakov <alex@plhk.dev>"]
+authors = ["Alexander Polakov <alex@plhk.dev>", "Blaž Hrastnik <blaz@mxxn.io>"]
 description = "A post-modern text editor."
 include = ["src/**/*", "README.md"]
 default-run = "hxg"
