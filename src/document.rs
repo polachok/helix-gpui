@@ -186,8 +186,15 @@ impl DocumentElement {
         .element
     }
 
-    // These 2 methods are just proxies for EditorView
+    // These 3 methods are just proxies for EditorView
     // TODO: make a PR to helix to extract them from helix_term into helix_view or smth.
+    fn doc_diagnostics_highlights<'d>(
+        doc: &'d helix_view::Document,
+        theme: &Theme,
+    ) -> impl Iterator<Item = Vec<(usize, std::ops::Range<usize>)>> {
+        EditorView::doc_diagnostics_highlights(doc, theme).into_iter()
+    }
+
     fn doc_syntax_highlights<'d>(
         doc: &'d helix_view::Document,
         anchor: usize,
@@ -247,6 +254,17 @@ impl DocumentElement {
                     Box::new(helix_core::syntax::merge(highlights, focused_view_elements))
             }
         }
+
+        for diagnostic in Self::doc_diagnostics_highlights(doc, theme) {
+            // Most of the `diagnostic` Vecs are empty most of the time. Skipping
+            // a merge for any empty Vec saves a significant amount of work.
+            if diagnostic.is_empty() {
+                continue;
+            }
+            overlay_highlights =
+                Box::new(helix_core::syntax::merge(overlay_highlights, diagnostic));
+        }
+
         overlay_highlights
     }
 
@@ -272,6 +290,7 @@ impl DocumentElement {
             true,
             is_view_focused,
         );
+
         let syntax_highlights = Self::doc_syntax_highlights(doc, anchor, lines, theme);
 
         let mut syntax_styles = StyleIter {
@@ -330,6 +349,12 @@ impl DocumentElement {
                     ovl_end.checked_sub(position).unwrap_or(usize::MAX),
                 )
             };
+            let underline = style.underline_color.and_then(color_to_hsla);
+            let underline = underline.map(|color| UnderlineStyle {
+                thickness: px(1.),
+                color: Some(color),
+                wavy: true,
+            });
 
             let len = std::cmp::min(len, end_char);
 
@@ -338,7 +363,7 @@ impl DocumentElement {
                 font: font.clone(),
                 color: fg,
                 background_color: bg,
-                underline: None,
+                underline,
                 strikethrough: None,
             };
             runs.push(run);
@@ -586,6 +611,10 @@ impl Element for DocumentElement {
                 }
                 // draw gutter
                 {
+                    let mut gutter_origin = bounds.origin;
+                    gutter_origin.x += px(2.);
+                    gutter_origin.y += px(1.);
+
                     let core = self.core.read(cx);
                     let editor = &core.editor;
                     let theme = &editor.theme;
@@ -605,7 +634,7 @@ impl Element for DocumentElement {
                         text_system: cx.text_system().clone(),
                         lines: Vec::new(),
                         style: self.style.clone(),
-                        origin: bounds.origin,
+                        origin: gutter_origin,
                     };
                     {
                         let mut gutters = Vec::new();
@@ -625,6 +654,21 @@ impl Element for DocumentElement {
                     }
                     for (origin, line) in gutter.lines {
                         line.paint(origin, after_layout.line_height, cx).unwrap();
+                    }
+                }
+
+                // draw diagnostics if we have it
+                {
+                    let core = self.core.read(cx);
+                    let editor = &core.editor;
+                    let doc_id = self.doc_id;
+                    if let Some(path) = editor.document(doc_id).and_then(|doc| doc.path()).cloned()
+                    {
+                        if let Some(diagnostics) = editor.diagnostics.get(&path) {
+                            for (diag, _) in diagnostics {
+                                println!("{:?}", diag);
+                            }
+                        }
                     }
                 }
             });
