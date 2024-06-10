@@ -1,10 +1,11 @@
 use std::borrow::Cow;
 
-use gpui::*;
+use gpui::{prelude::FluentBuilder, *};
 use helix_core::{
     ropey::RopeSlice,
     syntax::{Highlight, HighlightEvent},
 };
+use helix_lsp::lsp::{Diagnostic, DiagnosticSeverity, NumberOrString};
 use helix_term::ui::EditorView;
 use helix_view::{graphics::CursorKind, Document, DocumentId, Editor, Theme, View, ViewId};
 use log::debug;
@@ -42,6 +43,50 @@ impl DocumentView {
 
     pub fn set_focused(&mut self, is_focused: bool) {
         self.is_focused = is_focused;
+    }
+
+    fn get_diagnostics(&self, cx: &mut ViewContext<Self>) -> Vec<Diagnostic> {
+        if !self.is_focused {
+            return Vec::new();
+        }
+
+        let core = self.core.read(cx);
+        let editor = &core.editor;
+
+        let (cursor_pos, doc_id, first_row) = {
+            let view = editor.tree.get(self.view_id);
+            let doc_id = view.doc;
+            let document = editor.document(doc_id).unwrap();
+            let text = document.text();
+
+            let primary_idx = document
+                .selection(self.view_id)
+                .primary()
+                .cursor(text.slice(..));
+            let cursor_pos = view.screen_coords_at_pos(document, text.slice(..), primary_idx);
+
+            let anchor = view.offset.anchor;
+            let first_row = text.char_to_line(anchor.min(text.len_chars()));
+            (cursor_pos, doc_id, first_row)
+        };
+        let Some(cursor_pos) = cursor_pos else {
+            return Vec::new();
+        };
+
+        let mut diags = Vec::new();
+        if let Some(path) = editor.document(doc_id).and_then(|doc| doc.path()).cloned() {
+            if let Some(diagnostics) = editor.diagnostics.get(&path) {
+                for (diag, _) in diagnostics.iter().filter(|(diag, _)| {
+                    let (start_line, end_line) =
+                        (diag.range.start.line as usize, diag.range.end.line as usize);
+                    let row = cursor_pos.row + first_row;
+                    start_line <= row && row <= end_line
+                }) {
+                    diags.push(diag.clone());
+                }
+            }
+        }
+        diags
     }
 }
 
@@ -130,6 +175,17 @@ impl Render for DocumentView {
             self.style.clone(),
         );
 
+        let diags = {
+            let theme = self.core.read(cx).editor.theme.clone();
+
+            self.get_diagnostics(cx).into_iter().map(move |diag| {
+                cx.new_view(|_| DiagnosticView {
+                    diagnostic: diag,
+                    theme: theme.clone(),
+                })
+            })
+        };
+
         div()
             .w_full()
             .h_full()
@@ -137,6 +193,18 @@ impl Render for DocumentView {
             .flex_col()
             .child(doc)
             .child(status)
+            .child(
+                div()
+                    .flex()
+                    .w(DefiniteLength::Fraction(0.33))
+                    .h(DefiniteLength::Fraction(0.8))
+                    .flex_col()
+                    .absolute()
+                    .top_8()
+                    .right_5()
+                    .gap_4()
+                    .children(diags),
+            )
     }
 }
 
@@ -656,21 +724,6 @@ impl Element for DocumentElement {
                         line.paint(origin, after_layout.line_height, cx).unwrap();
                     }
                 }
-
-                // draw diagnostics if we have it
-                {
-                    let core = self.core.read(cx);
-                    let editor = &core.editor;
-                    let doc_id = self.doc_id;
-                    if let Some(path) = editor.document(doc_id).and_then(|doc| doc.path()).cloned()
-                    {
-                        if let Some(diagnostics) = editor.diagnostics.get(&path) {
-                            for (diag, _) in diagnostics {
-                                println!("{:?}", diag);
-                            }
-                        }
-                    }
-                }
             });
     }
 }
@@ -894,5 +947,72 @@ impl<H: Iterator<Item = HighlightEvent>> Iterator for StyleIter<'_, H> {
             }
         }
         None
+    }
+}
+
+struct DiagnosticView {
+    diagnostic: Diagnostic,
+    theme: Theme,
+}
+
+impl Render for DiagnosticView {
+    fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
+        debug!("rendering diag {:?}", self.diagnostic);
+
+        fn color(style: helix_view::graphics::Style) -> Hsla {
+            style.fg.and_then(color_to_hsla).unwrap_or(white())
+        }
+
+        let theme = &self.theme;
+        let text_style = theme.get("ui.text.info");
+        let popup_style = theme.get("ui.popup.info");
+        let warning = theme.get("warning");
+        let error = theme.get("error");
+        let info = theme.get("info");
+        let hint = theme.get("hint");
+
+        let fg = text_style.fg.and_then(color_to_hsla).unwrap_or(white());
+        let bg = popup_style.bg.and_then(color_to_hsla).unwrap_or(black());
+
+        let title_color = match self.diagnostic.severity {
+            Some(DiagnosticSeverity::WARNING) => color(warning),
+            Some(DiagnosticSeverity::ERROR) => color(error),
+            Some(DiagnosticSeverity::INFORMATION) => color(info),
+            Some(DiagnosticSeverity::HINT) => color(hint),
+            _ => fg,
+        };
+
+        let font = cx.global::<crate::FontSettings>().fixed_font.clone();
+        let source_and_code = self.diagnostic.source.as_ref().and_then(|src| {
+            let code = self.diagnostic.code.as_ref();
+            let code_str = code.map(|code| match code {
+                NumberOrString::Number(num) => num.to_string(),
+                NumberOrString::String(str) => str.to_string(),
+            });
+            Some(format!("{}: {}", src, code_str.unwrap_or_default()))
+        });
+
+        div()
+            .p_2()
+            .gap_2()
+            .shadow_sm()
+            .rounded_sm()
+            .bg(black())
+            .flex()
+            .flex_col()
+            .font(font)
+            .text_size(px(12.))
+            .text_color(fg)
+            .bg(bg)
+            .child(
+                div()
+                    .flex()
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(title_color)
+                    .justify_center()
+                    .items_center()
+                    .when_some(source_and_code, |this, source| this.child(source.clone())),
+            )
+            .child(div().flex_col().child(self.diagnostic.message.clone()))
     }
 }
